@@ -29,7 +29,24 @@ in which handlers are called controls effect interaction.
 - `Writer ω`: `tell`, `runWriter`
 - `State σ`: `get`, `put`, `modify`, `runState`, `evalState`, `execState`
 - `ExceptE ε`: `throw`, `tryCatch`, `runExcept`
+- `Random`: `randNat`, `randBool`, `runRandom`, `evalRandom`
 - `LiftIO`: `liftIO`, `runLiftIO`
+
+## Examples
+
+- `Examples.AsciiTetris`: an animated terminal Tetris clone with nonblocking
+  controls, ANSI colors, and a next-piece preview. It uses `Reader` for
+  configuration, `State` for the board, `Writer` for game events, `ExceptE` for
+  quit/game-over exits, `Random` for piece generation, and an example-specific
+  `Terminal` effect for terminal input/output.
+
+Run it with:
+
+```sh
+lake exe ascii_tetris
+```
+
+Run it in a real terminal because it temporarily switches terminal input mode.
 
 ## V1 Notes
 

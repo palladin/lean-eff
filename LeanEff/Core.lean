@@ -3,16 +3,16 @@ import LeanEff.Internal.Union
 namespace LeanEff
 
 mutual
-  inductive Eff (r : List Effect) : Type → Type 2 where
+  inductive Eff (r : List Effect) : Type → Type _ where
     | pure {α : Type} : α → Eff r α
     | impure {α x : Type} : OpenUnion r x → Arrs r x α → Eff r α
 
-  inductive Arrs (r : List Effect) : Type → Type → Type 2 where
+  inductive Arrs (r : List Effect) : Type → Type → Type _ where
     | one {α β : Type} : (α → Eff r β) → Arrs r α β
     | append {α β γ : Type} : Arrs r α β → Arrs r β γ → Arrs r α γ
 end
 
-inductive Arrs.ViewL (r : List Effect) : Type → Type → Type 2 where
+inductive Arrs.ViewL (r : List Effect) : Type → Type → Type _ where
   | one {α β : Type} : (α → Eff r β) → Arrs.ViewL r α β
   | cons {α β γ : Type} : (α → Eff r β) → Arrs r β γ → Arrs.ViewL r α γ
 

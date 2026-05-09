@@ -77,6 +77,19 @@ def customProgram : Eff [Writer String, Prompt] Nat := do
 #guard run (runWriter (runPrompt true customProgram)) == (1, ["yes"])
 #guard run (runWriter (runPrompt false customProgram)) == (0, ["no"])
 
+def randomProgram : Eff [Random] (Nat × Nat × Bool) := do
+  let low ← randNat 0 6
+  let high ← randNat 10 12
+  let coin ← randBool
+  pure (low, high, coin)
+
+#guard
+  match run (evalRandom 123 randomProgram) with
+  | (low, high, _) =>
+      decide (low <= 6) && decide (10 <= high) && decide (high <= 12)
+
+#guard run (evalRandom 123 randomProgram) == (1, 10, true)
+
 def addGet (x : Nat) : Eff [Reader Nat] Nat := do
   let env ← ask
   pure (env + x)
