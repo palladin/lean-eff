@@ -1,6 +1,9 @@
 import Lake
 open Lake DSL
 
+require leansqlite from git
+  "https://github.com/leanprover/leansqlite.git" @ "main"
+
 package lean_eff where
   version := v!"0.1.0"
 
@@ -15,3 +18,7 @@ lean_exe lean_eff_tests where
 @[default_target]
 lean_exe ascii_tetris where
   root := `Examples.AsciiTetris
+
+@[default_target]
+lean_exe video_rental_shop where
+  root := `Examples.VideoRental

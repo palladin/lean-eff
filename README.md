@@ -48,6 +48,18 @@ lake exe ascii_tetris
 
 Run it in a real terminal because it temporarily switches terminal input mode.
 
+- `Examples.VideoRental`: a small "Palladin's Video Rental" shop. The business
+  logic uses `Clock` for the current rental day, `RentalRepo` for customers,
+  movies, and rentals, and `Writer String` as a notification outbox. The demo
+  interpreter backs the repository with an initialized in-memory SQLite database
+  through `leanprover/leansqlite`, then runs an interactive menu until quit.
+
+Run it with:
+
+```sh
+lake exe video_rental_shop
+```
+
 ## V1 Notes
 
 - Duplicate effect labels are unsupported. Wrap labels in distinct types if two
