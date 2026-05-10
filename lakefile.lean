@@ -22,3 +22,7 @@ lean_exe ascii_tetris where
 @[default_target]
 lean_exe video_rental_shop where
   root := `Examples.VideoRental
+
+@[default_target]
+lean_exe agent_snake_arena where
+  root := `Examples.AgentSnake

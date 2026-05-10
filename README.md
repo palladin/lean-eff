@@ -60,6 +60,19 @@ Run it with:
 lake exe video_rental_shop
 ```
 
+- `Examples.AgentSnake`: a concurrent multi-agent snake arena. The arena uses
+  an `AgentHost` effect to spawn AI agents, publish world snapshots, and gather
+  agent moves. Each AI snake is an independent `AgentEff` program that observes
+  snapshots and chooses moves. `Random` drives agent jitter and food placement,
+  while a private IO interpreter wires the programs together with `Std.Channel`
+  and Lean tasks.
+
+Run it with:
+
+```sh
+lake exe agent_snake_arena
+```
+
 ## V1 Notes
 
 - Duplicate effect labels are unsupported. Wrap labels in distinct types if two
