@@ -4,7 +4,7 @@ universe u
 
 abbrev Effect := Type → Type 1
 
-inductive OpenUnion : List Effect → Type → Type 2 where
+inductive OpenUnion : List Effect → Type → Type _ where
   | here {t : Effect} {r : List Effect} {α : Type} :
       t α → OpenUnion (t :: r) α
   | there {t : Effect} {r : List Effect} {α : Type} :

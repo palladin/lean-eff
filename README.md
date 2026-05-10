@@ -64,13 +64,19 @@ lake exe video_rental_shop
   an `AgentHost` effect to spawn AI agents, publish world snapshots, and gather
   agent moves. Each AI snake is an independent `AgentEff` program that observes
   snapshots and chooses moves. `Random` drives agent jitter and food placement,
-  while a private IO interpreter wires the programs together with `Std.Channel`
-  and Lean tasks.
+  and the same effects can run with either a threaded host interpreter or a
+  single-threaded cooperative interpreter.
 
 Run it with:
 
 ```sh
 lake exe agent_snake_arena
+```
+
+Use the single-threaded cooperative interpreter with:
+
+```sh
+lake exe agent_snake_arena --cooperative
 ```
 
 ## V1 Notes

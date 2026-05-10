@@ -435,11 +435,20 @@ def renderWorld (world : World) : String :=
     ["AGENT SNAKE ARENA",
      s!"tick {world.tick}    food at ({world.food.x}, {world.food.y})"] ++
     board ++ [""] ++ scores ++ [""] ++ events ++
-    ["", "Each snake is a separate Eff agent running in its own Lean task."]) ++ "\n"
+    ["", "Agents are Eff programs scheduled by the selected AgentHost interpreter."]) ++ "\n"
 
 private structure AgentWire where
   profile : AgentProfile
   views : Std.Channel.Sync WorldView
+
+private abbrev AgentResult :=
+  (Unit × StdGen) × List String
+
+private def buildAgentProgram (profile : AgentProfile) (turns : Nat) :
+    Eff [AgentRuntime] AgentResult :=
+  runWriter <|
+    runRandom profile.seed <|
+      runReader profile (agentLoop turns)
 
 private structure AgentHostIO where
   moveQueue : Std.Channel.Sync AgentMove
@@ -476,12 +485,8 @@ private partial def runAgentRuntime {α : Type} (host : AgentHostIO) (wire : Age
 
 private def runAgent (turns : Nat) (host : AgentHostIO) (wire : AgentWire) :
     IO (List String) := do
-  let ((_, _gen), thoughts) ←
-    runAgentRuntime host wire <|
-      runWriter <|
-        runRandom wire.profile.seed <|
-          runReader wire.profile (agentLoop turns)
-  pure thoughts
+  let result ← runAgentRuntime host wire (buildAgentProgram wire.profile turns)
+  pure result.2
 
 private def spawnAgentIO (host : AgentHostIO) (profile : AgentProfile)
     (turns : Nat) : IO Unit := do
@@ -491,7 +496,7 @@ private def spawnAgentIO (host : AgentHostIO) (profile : AgentProfile)
   let task ← IO.asTask (runAgent turns host wire)
   host.tasks.modify fun tasks => task :: tasks
 
-private partial def runArenaIO {α : Type} (host : AgentHostIO) :
+private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
     Eff [AgentHost, ArenaRuntime] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
@@ -500,38 +505,160 @@ private partial def runArenaIO {α : Type} (host : AgentHostIO) :
           match request with
           | AgentHost.spawn profile turns => do
               spawnAgentIO host profile turns
-              runArenaIO host (Arrs.apply q ())
+              runArenaThreadedIO host (Arrs.apply q ())
           | AgentHost.snapshot world => do
               let wires ← host.wires.get
               for wire in wires do
                 Std.Channel.Sync.send wire.views (viewFor world wire.profile)
-              runArenaIO host (Arrs.apply q ())
+              runArenaThreadedIO host (Arrs.apply q ())
           | AgentHost.moves => do
               let moves ← drainMoves host.moveQueue []
-              runArenaIO host (Arrs.apply q moves)
+              runArenaThreadedIO host (Arrs.apply q moves)
       | OpenUnion.there rest =>
           match rest with
           | OpenUnion.here request =>
               match request with
               | ArenaRuntime.draw world => do
                   IO.print (renderWorld world)
-                  runArenaIO host (Arrs.apply q ())
+                  runArenaThreadedIO host (Arrs.apply q ())
               | ArenaRuntime.sleep ms => do
                   IO.sleep (UInt32.ofNat ms)
-                  runArenaIO host (Arrs.apply q ())
+                  runArenaThreadedIO host (Arrs.apply q ())
           | OpenUnion.there rest => OpenUnion.absurd rest
 
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
   let tasks ← host.tasks.get
   tasks.reverse.mapM fun task => IO.ofExcept task.get
 
-private def runArena (cfg : ArenaConfig) (seed : Nat) (world : World) (host : AgentHostIO) :
+private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
+    (host : AgentHostIO) :
     IO ((Unit × World) × List String) :=
-  runArenaIO host <|
+  runArenaThreadedIO host <|
     runWriter <|
       evalRandom seed <|
         runState world <|
           runReader cfg arenaProgram
+
+private partial def runArenaDisplayIO {α : Type} :
+    Eff [ArenaRuntime] α → IO α
+  | Eff.pure x => pure x
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | ArenaRuntime.draw world => do
+              IO.print (renderWorld world)
+              runArenaDisplayIO (Arrs.apply q ())
+          | ArenaRuntime.sleep ms => do
+              IO.sleep (UInt32.ofNat ms)
+              runArenaDisplayIO (Arrs.apply q ())
+      | OpenUnion.there rest => OpenUnion.absurd rest
+
+private structure CoopAgent where
+  profile : AgentProfile
+  program : Eff [AgentRuntime] AgentResult
+  logs? : Option (List String)
+
+private structure CoopHost where
+  agents : List CoopAgent
+  pendingMoves : List AgentMove
+
+private def CoopHost.empty : CoopHost :=
+  { agents := [], pendingMoves := [] }
+
+private def coopAgentLogs (host : CoopHost) : List (List String) :=
+  host.agents.filterMap fun agent => agent.logs?
+
+private structure ResumeResult where
+  program : Eff [AgentRuntime] AgentResult
+  moves : List AgentMove
+  logs? : Option (List String)
+deriving Inhabited
+
+private partial def resumeAgentUntilNextView (profile : AgentProfile)
+    (view : WorldView) (usedView : Bool)
+    (program : Eff [AgentRuntime] AgentResult)
+    (moves : List AgentMove) : ResumeResult :=
+  match program with
+  | Eff.pure result =>
+      { program
+        moves := moves.reverse
+        logs? := some result.2 }
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | AgentRuntime.observe =>
+              if usedView then
+                { program
+                  moves := moves.reverse
+                  logs? := none }
+              else
+                resumeAgentUntilNextView profile view true (Arrs.apply q view) moves
+          | AgentRuntime.move dir =>
+              resumeAgentUntilNextView profile view usedView (Arrs.apply q ())
+                ({ agentId := profile.id, dir } :: moves)
+      | OpenUnion.there rest => OpenUnion.absurd rest
+
+private def stepCoopAgent (world : World) (agent : CoopAgent) :
+    CoopAgent × List AgentMove :=
+  match agent.logs? with
+  | some _ => (agent, [])
+  | none =>
+      let view := viewFor world agent.profile
+      let result :=
+        resumeAgentUntilNextView agent.profile view false agent.program []
+      ({ agent with program := result.program, logs? := result.logs? }, result.moves)
+
+private def stepCoopAgents (world : World) (agents : List CoopAgent) :
+    List CoopAgent × List AgentMove :=
+  agents.foldl
+    (fun acc agent =>
+      let (nextAgents, moves) := acc
+      let (agent, newMoves) := stepCoopAgent world agent
+      (nextAgents ++ [agent], moves ++ newMoves))
+    (([] : List CoopAgent), ([] : List AgentMove))
+
+private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost) :
+    Eff [AgentHost, ArenaRuntime] α → Eff [ArenaRuntime] (α × List (List String))
+  | Eff.pure x => pure (x, coopAgentLogs host)
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | AgentHost.spawn profile turns =>
+              let agent :=
+                { profile
+                  program := buildAgentProgram profile turns
+                  logs? := none }
+              runAgentHostCoop
+                { host with agents := host.agents ++ [agent] }
+                (Arrs.apply q ())
+          | AgentHost.snapshot world =>
+              let (agents, moves) := stepCoopAgents world host.agents
+              runAgentHostCoop
+                { agents
+                  pendingMoves := host.pendingMoves ++ moves }
+                (Arrs.apply q ())
+          | AgentHost.moves =>
+              runAgentHostCoop
+                { host with pendingMoves := [] }
+                (Arrs.apply q host.pendingMoves)
+      | OpenUnion.there rest =>
+          match rest with
+          | OpenUnion.here request =>
+              Eff.impure (OpenUnion.here request)
+                (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
+          | OpenUnion.there rest => OpenUnion.absurd rest
+
+private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
+    IO (((Unit × World) × List String) × List (List String)) :=
+  runArenaDisplayIO <|
+    runAgentHostCoop CoopHost.empty <|
+      runWriter <|
+        evalRandom seed <|
+          runState world <|
+            runReader cfg arenaProgram
 
 def withArenaScreen (body : IO α) : IO α := do
   IO.print enterScreen
@@ -580,9 +707,39 @@ def initialWorld (profiles : List AgentProfile) : World :=
 def defaultConfig (profiles : List AgentProfile) : ArenaConfig :=
   { maxTicks := 90, tickMs := 75, thinkMs := 10, agents := profiles }
 
-def printSummary (arenaLog : List String) (agentLogs : List (List String))
+inductive Runtime where
+  | threaded
+  | cooperative
+deriving BEq, Inhabited
+
+def Runtime.label : Runtime → String
+  | .threaded => "threaded tasks"
+  | .cooperative => "single-threaded cooperative"
+
+def runtimeFromArgs (args : List String) : Except String Runtime :=
+  match args with
+  | [] => .ok .threaded
+  | ["--threaded"] => .ok .threaded
+  | ["--cooperative"] => .ok .cooperative
+  | _ => .error "usage: lake exe agent_snake_arena [--threaded|--cooperative]"
+
+private def runWithRuntime (runtime : Runtime) (cfg : ArenaConfig)
+    (arenaSeed : Nat) (world : World) :
+    IO (((Unit × World) × List String) × List (List String)) := do
+  match runtime with
+  | .threaded =>
+      let host ← newAgentHostIO
+      let result ← withArenaScreen (runArenaThreaded cfg arenaSeed world host)
+      let agentLogs ← waitAgentLogs host
+      pure (result, agentLogs)
+  | .cooperative =>
+      withArenaScreen (runArenaCoop cfg arenaSeed world)
+
+def printSummary (runtime : Runtime) (arenaLog : List String)
+    (agentLogs : List (List String))
     (world : World) : IO Unit := do
   IO.println ""
+  IO.println s!"Runtime: {runtime.label}"
   IO.println "Final scores"
   for snake in world.snakes do
     IO.println s!"- {snake.name}: {snake.score}"
@@ -590,18 +747,20 @@ def printSummary (arenaLog : List String) (agentLogs : List (List String))
   IO.println s!"Arena log entries: {arenaLog.length}"
   IO.println s!"Agent thought entries: {(agentLogs.map List.length).foldl (· + ·) 0}"
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
+  let runtime ←
+    match runtimeFromArgs args with
+    | .ok runtime => pure runtime
+    | .error message => throw (IO.userError message)
   let arenaSeed ← IO.rand 0 1000000000
   let agentSeed ← IO.rand 0 1000000000
   let profiles := seedProfiles agentSeed baseProfiles
   let cfg := defaultConfig profiles
-  let host ← newAgentHostIO
-  let ((_, finalWorld), arenaLog) ←
-    withArenaScreen (runArena cfg arenaSeed (initialWorld profiles) host)
-  let agentLogs ← waitAgentLogs host
-  printSummary arenaLog agentLogs finalWorld
+  let (((_, finalWorld), arenaLog), agentLogs) ←
+    runWithRuntime runtime cfg arenaSeed (initialWorld profiles)
+  printSummary runtime arenaLog agentLogs finalWorld
 
 end Examples.AgentSnake
 
-def main : IO Unit :=
-  Examples.AgentSnake.main
+def main (args : List String) : IO Unit :=
+  Examples.AgentSnake.main args
