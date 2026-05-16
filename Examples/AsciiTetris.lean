@@ -206,6 +206,47 @@ def exitScreen : String :=
 def framePrefix : String :=
   "\x1b[H\x1b[J"
 
+structure SnapshotProgress where
+  current : Nat
+  total : Nat
+
+structure RenderInfo where
+  mode : String
+  snapshot? : Option SnapshotProgress := none
+  json? : Option String := none
+
+def snapshotProgressBarWidth : Nat := 16
+
+def SnapshotProgress.bar (progress : SnapshotProgress) : String :=
+  let filled :=
+    if progress.total == 0 then
+      0
+    else
+      Nat.min snapshotProgressBarWidth
+        ((progress.current * snapshotProgressBarWidth) / progress.total)
+  if filled >= snapshotProgressBarWidth then
+    repeatString "=" snapshotProgressBarWidth
+  else
+    repeatString "=" filled ++ ">" ++
+      repeatString "." (snapshotProgressBarWidth - filled - 1)
+
+def SnapshotProgress.display (progress : SnapshotProgress) : String :=
+  s!"snap [{progress.bar}] {progress.current}/{progress.total}"
+
+def RenderInfo.footer (info : RenderInfo) : String :=
+  let snapshot :=
+    match info.snapshot? with
+    | none => []
+    | some progress => [progress.display]
+  let json :=
+    match info.json? with
+    | none => []
+    | some path => [s!"json: {path}"]
+  String.intercalate " | " (["mode: " ++ info.mode] ++ snapshot ++ json)
+
+def renderFrame (info : RenderInfo) (frame : String) : String :=
+  frame ++ "\n\n" ++ info.footer
+
 def pieceColor (name : String) : String :=
   match name with
   | "I" => "36"
@@ -434,7 +475,7 @@ def runGameLogic (cfg : Config) (seed : Nat) :
 abbrev GameResult :=
   (Except Exit Unit × Game) × List String
 
-partial def runTerminalIO {α : Type} :
+partial def runTerminalIO {α : Type} (info : RenderInfo) :
     Eff [Display String, Input Command, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
@@ -442,8 +483,8 @@ partial def runTerminalIO {α : Type} :
       | OpenUnion.here request =>
           match request with
           | Display.draw frame => do
-              IO.println frame
-              runTerminalIO (Arrs.apply q ())
+              IO.println (renderFrame info frame)
+              runTerminalIO info (Arrs.apply q ())
       | OpenUnion.there inputUnion =>
           match inputUnion with
           | OpenUnion.here request =>
@@ -451,27 +492,27 @@ partial def runTerminalIO {α : Type} :
               | Input.poll => do
                   let stdin ← IO.getStdin
                   let bytes ← stdin.read 8
-                  runTerminalIO (Arrs.apply q (parseCommand bytes))
+                  runTerminalIO info (Arrs.apply q (parseCommand bytes))
           | OpenUnion.there sleepUnion =>
               match sleepUnion with
               | OpenUnion.here request =>
                   match request with
                   | Sleep.sleepMs ms => do
                       IO.sleep (UInt32.ofNat ms)
-                      runTerminalIO (Arrs.apply q ())
+                      runTerminalIO info (Arrs.apply q ())
               | OpenUnion.there rest => OpenUnion.absurd rest
 
 def runGame (cfg : Config) : IO ((Except Exit Unit × Game) × List String) := do
   let seed ← IO.rand 0 1000000000
-  runTerminalIO (runGameLogic cfg seed)
+  runTerminalIO { mode := "play" } (runGameLogic cfg seed)
 
-def runGameRecording (cfg : Config) : IO (GameResult × Snapshot) := do
+def runGameRecording (info : RenderInfo) (cfg : Config) : IO (GameResult × Snapshot) := do
   let seed ← IO.rand 0 1000000000
   buildGame cfg
     |> recordSnapshot
     |> runWriter (ω := SnapshotEvent)
     |> evalRandom seed
-    |> runTerminalIO
+    |> runTerminalIO info
 
 def replayGame (cfg : Config) (snapshot : Snapshot) :
     Except SnapshotReplayError GameResult :=
@@ -490,6 +531,9 @@ def isReplayDisplayEvent (event : SnapshotEvent) : Bool :=
   (event.effect == "Display" && snapshotOp? event == some "draw") ||
     (event.effect == "Sleep" && snapshotOp? event == some "sleep")
 
+def eventHasOp (effect op : String) (event : SnapshotEvent) : Bool :=
+  event.effect == effect && snapshotOp? event == some op
+
 partial def ReplayState.dropDisplayEvents (state : ReplayState) : ReplayState :=
   match state.remaining with
   | event :: rest =>
@@ -500,14 +544,15 @@ partial def ReplayState.dropDisplayEvents (state : ReplayState) : ReplayState :=
         state
   | [] => state
 
-def ReplayState.consumeDisplayEvent (state : ReplayState) : ReplayState :=
+def ReplayState.consumeOptionalEvent (state : ReplayState)
+    (effect op : String) : Option (Nat × SnapshotEvent) × ReplayState :=
   match state.remaining with
   | event :: rest =>
-      if isReplayDisplayEvent event then
-        { index := state.index + 1, remaining := rest }
+      if eventHasOp effect op event then
+        (some (state.index, event), { index := state.index + 1, remaining := rest })
       else
-        state
-  | [] => state
+        (none, state)
+  | [] => (none, state)
 
 def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
     (request : t α) (state : ReplayState) :
@@ -528,7 +573,8 @@ def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
         Except.error (SnapshotReplayError.eventMismatch state.index event actual)
 
 partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
-    (state : ReplayState) : Eff [Random, Display String, Input Command, Sleep] α →
+    (jsonName : String) (totalSnapshots : Nat) (state : ReplayState) :
+    Eff [Random, Display String, Input Command, Sleep] α →
     IO (Except SnapshotReplayError (α × ReplayState))
   | Eff.pure x =>
       let state := state.dropDisplayEvents
@@ -540,15 +586,23 @@ partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
       | OpenUnion.here request =>
           match consumeSnapshotResponse request state with
           | Except.ok (response, state) =>
-              replayGameAnimatedLoop state (Arrs.apply q response)
+              replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
           | Except.error error => pure (Except.error error)
       | OpenUnion.there terminalUnion =>
           match terminalUnion with
           | OpenUnion.here request =>
               match request with
               | Display.draw frame => do
-                  IO.println frame
-                  replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
+                  let (event?, state) := state.consumeOptionalEvent "Display" "draw"
+                  let info : RenderInfo :=
+                    { mode := "replay"
+                      snapshot? :=
+                        event?.map fun (index, _) =>
+                          { current := index + 1
+                            total := totalSnapshots }
+                      json? := some jsonName }
+                  IO.println (renderFrame info frame)
+                  replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
           | OpenUnion.there inputUnion =>
               match inputUnion with
               | OpenUnion.here request =>
@@ -556,21 +610,24 @@ partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
                   | Input.poll =>
                     match consumeSnapshotResponse (Input.poll (ι := Command)) state with
                     | Except.ok (response, state) =>
-                        replayGameAnimatedLoop state (Arrs.apply q response)
+                        replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
                     | Except.error error => pure (Except.error error)
               | OpenUnion.there sleepUnion =>
                   match sleepUnion with
                   | OpenUnion.here request =>
                       match request with
                       | Sleep.sleepMs ms => do
+                          let (_, state) := state.consumeOptionalEvent "Sleep" "sleep"
                           IO.sleep (UInt32.ofNat ms)
-                          replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
+                          replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
                   | OpenUnion.there rest => OpenUnion.absurd rest
 
-def replayGameAnimated (cfg : Config) (snapshot : Snapshot) :
+def replayGameAnimated (jsonName : String) (cfg : Config) (snapshot : Snapshot) :
     IO (Except SnapshotReplayError GameResult) := do
   let result ←
     replayGameAnimatedLoop
+      jsonName
+      snapshot.length
       { index := 0, remaining := snapshot }
       (buildGame cfg)
   match result with
@@ -587,13 +644,10 @@ def readSnapshotJson (path : String) : IO Snapshot := do
   | Except.error error =>
       throw (IO.userError s!"could not read snapshot JSON from {path}: {error}")
 
-def printEvents (events : List String) : IO Unit := do
-  if events.isEmpty then
-    IO.println "No events recorded."
-  else
-    IO.println "Events:"
-    for event in events do
-      IO.println s!"- {event}"
+def jsonDisplayName (path : String) : String :=
+  match (System.FilePath.mk path).fileName with
+  | some name => name
+  | none => path
 
 def shellOutput (script : String) : IO String := do
   let out ← IO.Process.output { cmd := "sh", args := #["-c", script] }
@@ -647,12 +701,11 @@ def parseRunMode : List String → Except String RunMode
   | _ => Except.error usage
 
 def printSummary (result : GameResult) : IO Unit := do
-  let ((outcome, finalGame), events) := result
+  let ((outcome, finalGame), _) := result
   match outcome with
   | Except.ok _ => IO.println "Finished."
   | Except.error reason => IO.println s!"Stopped: {exitMessage reason}"
   IO.println s!"Final score: {finalGame.score}, lines: {finalGame.lines}"
-  printEvents events
 
 def printIntro : IO Unit := do
   IO.println "ASCII Tetris"
@@ -672,13 +725,15 @@ def main (args : List String) : IO Unit := do
   | RunMode.record path => do
       printIntro
       IO.println s!"Recording snapshot to {path}"
-      let (result, snapshot) ← withRawTerminal (runGameRecording cfg)
+      let info : RenderInfo :=
+        { mode := "record", json? := some (jsonDisplayName path) }
+      let (result, snapshot) ← withRawTerminal (runGameRecording info cfg)
       writeSnapshotJson path snapshot
       IO.println s!"Recorded {snapshot.length} effect events."
       printSummary result
   | RunMode.replay path => do
       let snapshot ← readSnapshotJson path
-      let result ← withRawTerminal (replayGameAnimated cfg snapshot)
+      let result ← withRawTerminal (replayGameAnimated (jsonDisplayName path) cfg snapshot)
       match result with
       | Except.ok result => do
           IO.println s!"Replay animation consumed {snapshot.length} snapshot events from {path}."

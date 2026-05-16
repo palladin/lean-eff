@@ -475,7 +475,45 @@ def statusLine (snake : Snake) : String :=
   let state := if snake.alive then "alive" else "out"
   s!"{snakeText snake "*"} {snake.name}: score {snake.score}, {state}"
 
-def renderWorld (world : World) : String :=
+structure SnapshotProgress where
+  current : Nat
+  total : Nat
+
+structure RenderInfo where
+  mode : String
+  snapshot? : Option SnapshotProgress := none
+  json? : Option String := none
+
+def snapshotProgressBarWidth : Nat := 16
+
+def SnapshotProgress.bar (progress : SnapshotProgress) : String :=
+  let filled :=
+    if progress.total == 0 then
+      0
+    else
+      Nat.min snapshotProgressBarWidth
+        ((progress.current * snapshotProgressBarWidth) / progress.total)
+  if filled >= snapshotProgressBarWidth then
+    repeatString "=" snapshotProgressBarWidth
+  else
+    repeatString "=" filled ++ ">" ++
+      repeatString "." (snapshotProgressBarWidth - filled - 1)
+
+def SnapshotProgress.display (progress : SnapshotProgress) : String :=
+  s!"snap [{progress.bar}] {progress.current}/{progress.total}"
+
+def RenderInfo.footer (info : RenderInfo) : String :=
+  let snapshot :=
+    match info.snapshot? with
+    | none => []
+    | some progress => [progress.display]
+  let json :=
+    match info.json? with
+    | none => []
+    | some path => [s!"json: {path}"]
+  String.intercalate " | " (["mode: " ++ info.mode] ++ snapshot ++ json)
+
+def renderWorld (info : RenderInfo) (world : World) : String :=
   let border := "+" ++ repeatString "-" world.width ++ "+"
   let board := [border] ++
     ((List.range world.height).map fun y => renderRow world y) ++
@@ -486,7 +524,7 @@ def renderWorld (world : World) : String :=
     ["AGENT SNAKE ARENA",
      s!"tick {world.tick}    food at ({world.food.x}, {world.food.y})"] ++
     board ++ [""] ++ scores ++
-    ["", "Agents are Eff programs scheduled by the selected AgentHost interpreter."]) ++ "\n"
+    ["", info.footer]) ++ "\n"
 
 private structure AgentWire where
   profile : AgentProfile
@@ -548,7 +586,8 @@ private def spawnAgentIO (host : AgentHostIO) (profile : AgentProfile)
   let task ← IO.asTask (runAgent turns host wire)
   host.tasks.modify fun tasks => task :: tasks
 
-private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
+private partial def runArenaThreadedIO {α : Type} (info : RenderInfo)
+    (host : AgentHostIO) :
     Eff [AgentHost, Display World, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
@@ -557,29 +596,29 @@ private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
           match request with
           | AgentHost.spawn profile turns => do
               spawnAgentIO host profile turns
-              runArenaThreadedIO host (Arrs.apply q ())
+              runArenaThreadedIO info host (Arrs.apply q ())
           | AgentHost.snapshot world => do
               let wires ← host.wires.get
               for wire in wires do
                 Std.Channel.Sync.send wire.views (viewFor world wire.profile)
-              runArenaThreadedIO host (Arrs.apply q ())
+              runArenaThreadedIO info host (Arrs.apply q ())
           | AgentHost.moves => do
               let moves ← drainMoves host.moveQueue []
-              runArenaThreadedIO host (Arrs.apply q moves)
+              runArenaThreadedIO info host (Arrs.apply q moves)
       | OpenUnion.there rest =>
           match rest with
           | OpenUnion.here request =>
               match request with
               | Display.draw world => do
-                  IO.print (renderWorld world)
-                  runArenaThreadedIO host (Arrs.apply q ())
+                  IO.print (renderWorld info world)
+                  runArenaThreadedIO info host (Arrs.apply q ())
           | OpenUnion.there sleepUnion =>
               match sleepUnion with
               | OpenUnion.here request =>
                   match request with
                   | Sleep.sleepMs ms => do
                       IO.sleep (UInt32.ofNat ms)
-                      runArenaThreadedIO host (Arrs.apply q ())
+                      runArenaThreadedIO info host (Arrs.apply q ())
               | OpenUnion.there rest => OpenUnion.absurd rest
 
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
@@ -599,22 +638,23 @@ private def buildArena (cfg : ArenaConfig) (world : World) :
     |> runState world
     |> runWriter
 
-private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
-    (host : AgentHostIO) :
+private def runArenaThreaded (info : RenderInfo) (cfg : ArenaConfig) (seed : Nat)
+    (world : World) (host : AgentHostIO) :
     IO ArenaResult :=
   buildArena cfg world
     |> evalRandom seed
-    |> runArenaThreadedIO host
+    |> runArenaThreadedIO info host
 
-private def runArenaThreadedRecording (cfg : ArenaConfig) (seed : Nat)
-    (world : World) (host : AgentHostIO) : IO (ArenaResult × Snapshot) :=
+private def runArenaThreadedRecording (info : RenderInfo) (cfg : ArenaConfig)
+    (seed : Nat) (world : World) (host : AgentHostIO) :
+    IO (ArenaResult × Snapshot) :=
   buildArena cfg world
     |> recordSnapshot
     |> runWriter (ω := SnapshotEvent)
     |> evalRandom seed
-    |> runArenaThreadedIO host
+    |> runArenaThreadedIO info host
 
-private partial def runArenaDisplayIO {α : Type} :
+private partial def runArenaDisplayIO {α : Type} (info : RenderInfo) :
     Eff [Display World, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
@@ -622,15 +662,15 @@ private partial def runArenaDisplayIO {α : Type} :
       | OpenUnion.here request =>
           match request with
           | Display.draw world => do
-              IO.print (renderWorld world)
-              runArenaDisplayIO (Arrs.apply q ())
+              IO.print (renderWorld info world)
+              runArenaDisplayIO info (Arrs.apply q ())
       | OpenUnion.there sleepUnion =>
           match sleepUnion with
           | OpenUnion.here request =>
               match request with
               | Sleep.sleepMs ms => do
                   IO.sleep (UInt32.ofNat ms)
-                  runArenaDisplayIO (Arrs.apply q ())
+                  runArenaDisplayIO info (Arrs.apply q ())
           | OpenUnion.there rest => OpenUnion.absurd rest
 
 private structure CoopAgent where
@@ -736,21 +776,23 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
                     (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
               | OpenUnion.there rest => OpenUnion.absurd rest
 
-private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
+private def runArenaCoop (info : RenderInfo) (cfg : ArenaConfig) (seed : Nat)
+    (world : World) :
     IO (ArenaResult × AgentLogs) :=
   buildArena cfg world
     |> evalRandom seed
     |> runAgentHostCoop CoopHost.empty
-    |> runArenaDisplayIO
+    |> runArenaDisplayIO info
 
-private def runArenaCoopRecording (cfg : ArenaConfig) (seed : Nat)
-    (world : World) : IO ((ArenaResult × Snapshot) × AgentLogs) :=
+private def runArenaCoopRecording (info : RenderInfo) (cfg : ArenaConfig)
+    (seed : Nat) (world : World) :
+    IO ((ArenaResult × Snapshot) × AgentLogs) :=
   buildArena cfg world
     |> recordSnapshot
     |> runWriter (ω := SnapshotEvent)
     |> evalRandom seed
     |> runAgentHostCoop CoopHost.empty
-    |> runArenaDisplayIO
+    |> runArenaDisplayIO info
 
 def withArenaScreen (body : IO α) : IO α := do
   IO.print enterScreen
@@ -855,7 +897,8 @@ def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
         Except.error (SnapshotReplayError.eventMismatch state.index event actual)
 
 partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
-    (state : ReplayState) : Eff [AgentHost, Display World, Sleep, Random] α →
+    (jsonName : String) (totalSnapshots : Nat) (state : ReplayState) :
+    Eff [AgentHost, Display World, Sleep, Random] α →
     IO (Except SnapshotReplayError (α × ReplayState))
   | Eff.pure x =>
       let state := state.dropOptionalEvents
@@ -868,23 +911,30 @@ partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
           match request with
           | AgentHost.spawn _ _ =>
               let (_, state) := state.consumeOptionalEvent "AgentHost" "spawn"
-              replayArenaAnimatedLoop state (Arrs.apply q ())
+              replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
           | AgentHost.snapshot _ =>
               let (_, state) := state.consumeOptionalEvent "AgentHost" "snapshot"
-              replayArenaAnimatedLoop state (Arrs.apply q ())
+              replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
           | AgentHost.moves =>
               match consumeSnapshotResponse AgentHost.moves state with
               | Except.ok (moves, state) =>
-                  replayArenaAnimatedLoop state (Arrs.apply q moves)
+                  replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q moves)
               | Except.error error => pure (Except.error error)
       | OpenUnion.there displayUnion =>
           match displayUnion with
           | OpenUnion.here request =>
               match request with
               | Display.draw world => do
-                  let (_, state) := state.consumeOptionalEvent "Display" "draw"
-                  IO.print (renderWorld world)
-                  replayArenaAnimatedLoop state (Arrs.apply q ())
+                  let (event?, state) := state.consumeOptionalEvent "Display" "draw"
+                  let info : RenderInfo :=
+                    { mode := "replay"
+                      snapshot? :=
+                        event?.map fun (index, _) =>
+                          { current := index + 1
+                            total := totalSnapshots }
+                      json? := some jsonName }
+                  IO.print (renderWorld info world)
+                  replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
           | OpenUnion.there sleepUnion =>
               match sleepUnion with
               | OpenUnion.here request =>
@@ -892,20 +942,23 @@ partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
                   | Sleep.sleepMs ms => do
                       let (_, state) := state.consumeOptionalEvent "Sleep" "sleep"
                       IO.sleep (UInt32.ofNat ms)
-                      replayArenaAnimatedLoop state (Arrs.apply q ())
+                      replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
               | OpenUnion.there randomUnion =>
                   match randomUnion with
                   | OpenUnion.here request =>
                       match consumeSnapshotResponse request state with
                       | Except.ok (response, state) =>
-                          replayArenaAnimatedLoop state (Arrs.apply q response)
+                          replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
                       | Except.error error => pure (Except.error error)
                   | OpenUnion.there rest => OpenUnion.absurd rest
 
-def replayArenaAnimated (cfg : ArenaConfig) (world : World) (snapshot : Snapshot) :
+def replayArenaAnimated (jsonName : String) (cfg : ArenaConfig) (world : World)
+    (snapshot : Snapshot) :
     IO (Except SnapshotReplayError ArenaResult) := do
   let result ←
     replayArenaAnimatedLoop
+      jsonName
+      snapshot.length
       { index := 0, remaining := snapshot }
       (buildArena cfg world)
   match result with
@@ -940,6 +993,11 @@ def readSnapshotJson (path : String) : IO Snapshot := do
   | Except.ok snapshot => pure snapshot
   | Except.error error =>
       throw (IO.userError s!"could not read snapshot JSON from {path}: {error}")
+
+def jsonDisplayName (path : String) : String :=
+  match (System.FilePath.mk path).fileName with
+  | some name => name
+  | none => path
 
 inductive Runtime where
   | threaded
@@ -1006,26 +1064,30 @@ def parseCli (args : List String) : Except String Cli :=
 private def runWithRuntime (runtime : Runtime) (cfg : ArenaConfig)
     (arenaSeed : Nat) (world : World) :
     IO (ArenaResult × AgentLogs) := do
+  let info : RenderInfo := { mode := s!"play ({runtime.label})" }
   match runtime with
   | .threaded =>
       let host ← newAgentHostIO
-      let result ← withArenaScreen (runArenaThreaded cfg arenaSeed world host)
+      let result ← withArenaScreen (runArenaThreaded info cfg arenaSeed world host)
       let agentLogs ← waitAgentLogs host
       pure (result, agentLogs)
   | .cooperative =>
-      withArenaScreen (runArenaCoop cfg arenaSeed world)
+      withArenaScreen (runArenaCoop info cfg arenaSeed world)
 
 private def runWithRuntimeRecording (runtime : Runtime) (cfg : ArenaConfig)
-    (arenaSeed : Nat) (world : World) :
+    (path : String) (arenaSeed : Nat) (world : World) :
     IO ((ArenaResult × Snapshot) × AgentLogs) := do
+  let info : RenderInfo :=
+    { mode := s!"record ({runtime.label})", json? := some (jsonDisplayName path) }
   match runtime with
   | .threaded =>
       let host ← newAgentHostIO
-      let result ← withArenaScreen (runArenaThreadedRecording cfg arenaSeed world host)
+      let result ←
+        withArenaScreen (runArenaThreadedRecording info cfg arenaSeed world host)
       let agentLogs ← waitAgentLogs host
       pure (result, agentLogs)
   | .cooperative =>
-      withArenaScreen (runArenaCoopRecording cfg arenaSeed world)
+      withArenaScreen (runArenaCoopRecording info cfg arenaSeed world)
 
 def printSummary (runtimeLabel : String) (arenaLog : List String)
     (agentLogs : AgentLogs)
@@ -1061,7 +1123,7 @@ def main (args : List String) : IO Unit := do
       let profiles := seedProfiles agentSeed baseProfiles
       let cfg := defaultConfig profiles
       let ((((_, finalWorld), arenaLog), snapshot), agentLogs) ←
-        runWithRuntimeRecording cli.runtime cfg arenaSeed (initialWorld profiles)
+        runWithRuntimeRecording cli.runtime cfg path arenaSeed (initialWorld profiles)
       writeSnapshotJson path snapshot
       IO.println s!"Recorded {snapshot.length} effect events to {path}."
       printSummary cli.runtime.label arenaLog agentLogs finalWorld
@@ -1072,7 +1134,9 @@ def main (args : List String) : IO Unit := do
         | .ok profiles => pure profiles
         | .error message => throw (IO.userError message)
       let cfg := defaultConfig profiles
-      let result ← withArenaScreen (replayArenaAnimated cfg (initialWorld profiles) snapshot)
+      let result ←
+        withArenaScreen
+          (replayArenaAnimated (jsonDisplayName path) cfg (initialWorld profiles) snapshot)
       match result with
       | .ok ((_, finalWorld), arenaLog) => do
           IO.println s!"Replay animation consumed {snapshot.length} snapshot events from {path}."

@@ -27,7 +27,7 @@ deriving Repr, BEq, Lean.ToJson, Lean.FromJson
 abbrev Snapshot := List SnapshotEvent
 
 def Snapshot.toJsonString (snapshot : Snapshot) : String :=
-  (Lean.toJson snapshot).compress
+  (Lean.toJson snapshot).pretty
 
 def Snapshot.fromJsonString (contents : String) : Except String Snapshot := do
   let json ← Lean.Json.parse contents
