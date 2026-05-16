@@ -35,6 +35,38 @@ in which handlers are called controls effect interaction.
 - `Random`: `randNat`, `randBool`, `runRandom`, `evalRandom`
 - `LiftIO`: `liftIO`, `runLiftIO`
 
+## Debug Snapshots
+
+`recordSnapshot` records request/response effect interactions into a
+`Snapshot`. A snapshot can later replay the same responses with
+`replaySnapshot`, or be compared against another run with `compareSnapshots`.
+Use `Snapshot.toJsonString` and `Snapshot.fromJsonString` to persist traces as
+JSON.
+
+```lean
+def recorded :=
+  program
+    |> recordSnapshot
+    |> runReader 41
+    |> runWriter (ω := String)
+    |> runWriter (ω := SnapshotEvent)
+    |> run
+
+def replayed :=
+  program
+    |> replaySnapshot recorded.2
+
+def divergence :=
+  compareSnapshots recorded.2 anotherSnapshot
+```
+
+Effects opt into snapshots through `SnapshotCodec`, which encodes effect
+requests and responses as structured `Lean.Json` values. LeanEff includes
+codecs for the built-in resumable effects: `Reader`, `Writer`, `State`, and
+`Random`.
+Snapshots are request/response traces, so an effect operation that never resumes
+does not produce an event through this middleware.
+
 ## Examples
 
 - `Examples.AsciiTetris`: an animated terminal Tetris clone with nonblocking
@@ -47,6 +79,24 @@ Run it with:
 
 ```sh
 lake exe ascii_tetris
+```
+
+Record a JSON snapshot for deterministic debugging with:
+
+```sh
+lake exe ascii_tetris --record trace.json
+```
+
+Animate a JSON snapshot by replaying the recorded keys with:
+
+```sh
+lake exe ascii_tetris --replay trace.json
+```
+
+Strictly verify a JSON snapshot without animation with:
+
+```sh
+lake exe ascii_tetris --check trace.json
 ```
 
 Run it in a real terminal because it temporarily switches terminal input mode.

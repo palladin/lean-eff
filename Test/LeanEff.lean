@@ -91,6 +91,19 @@ def runPrompt {α : Type} {r r' : List Effect} [Remove Prompt r r'] [Inhabited �
       | Prompt.confirm _ => k answer)
     m
 
+instance : SnapshotCodec Prompt where
+  effectName := "Prompt"
+  encodeRequest
+    | Prompt.confirm message =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "confirm")
+          , ("message", Lean.Json.str message)
+          ]
+  encodeResponse
+    | Prompt.confirm _, answer => Lean.toJson answer
+  decodeResponse?
+    | Prompt.confirm _, value => (Lean.fromJson? value : Except String Bool).toOption
+
 def customProgram : Eff [Writer String, Prompt] Nat := do
   if (← confirm "continue?") then
     tell "yes"
@@ -111,6 +124,88 @@ def customProgram : Eff [Writer String, Prompt] Nat := do
     |> runWriter
     |> run) == (0, ["no"])
 
+def promptTrueEvent : SnapshotEvent :=
+  { effect := "Prompt"
+    request :=
+      Lean.Json.mkObj
+        [ ("op", Lean.Json.str "confirm")
+        , ("message", Lean.Json.str "continue?")
+        ]
+    response := Lean.Json.bool true }
+
+def promptFalseEvent : SnapshotEvent :=
+  { effect := "Prompt"
+    request :=
+      Lean.Json.mkObj
+        [ ("op", Lean.Json.str "confirm")
+        , ("message", Lean.Json.str "continue?")
+        ]
+    response := Lean.Json.bool false }
+
+def writerYesEvent : SnapshotEvent :=
+  { effect := "Writer"
+    request :=
+      Lean.Json.mkObj
+        [ ("op", Lean.Json.str "tell")
+        , ("value", Lean.Json.str "yes")
+        ]
+    response := Lean.Json.null }
+
+def writerNoEvent : SnapshotEvent :=
+  { effect := "Writer"
+    request :=
+      Lean.Json.mkObj
+        [ ("op", Lean.Json.str "tell")
+        , ("value", Lean.Json.str "no")
+        ]
+    response := Lean.Json.null }
+
+def customSnapshotTrue : Snapshot :=
+  [promptTrueEvent, writerYesEvent]
+
+def customSnapshotFalse : Snapshot :=
+  [promptFalseEvent, writerNoEvent]
+
+#guard
+  (customProgram
+    |> recordSnapshot
+    |> runPrompt true
+    |> runWriter (ω := String)
+    |> runWriter (ω := SnapshotEvent)
+    |> run) == ((1, ["yes"]), customSnapshotTrue)
+
+#guard
+  match customProgram |> replaySnapshot customSnapshotTrue with
+  | Except.ok 1 => true
+  | _ => false
+
+#guard
+  match customProgram |> replaySnapshot customSnapshotFalse with
+  | Except.ok 0 => true
+  | _ => false
+
+#guard
+  compareSnapshots customSnapshotTrue customSnapshotFalse ==
+    some (SnapshotDivergence.eventMismatch 0 promptTrueEvent promptFalseEvent)
+
+#guard
+  match Snapshot.fromJsonString (Snapshot.toJsonString customSnapshotTrue) with
+  | Except.ok snapshot => snapshot == customSnapshotTrue
+  | Except.error _ => false
+
+#guard
+  match customProgram |> replaySnapshot [writerYesEvent] with
+  | Except.error (SnapshotReplayError.eventMismatch 0 recorded actual) =>
+      recorded == writerYesEvent &&
+        actual ==
+          { effect := "Prompt"
+            request :=
+              Lean.Json.mkObj
+                [ ("op", Lean.Json.str "confirm")
+                , ("message", Lean.Json.str "continue?")
+                ] }
+  | _ => false
+
 def randomProgram : Eff [Random] (Nat × Nat × Bool) := do
   let low ← randNat 0 6
   let high ← randNat 10 12
@@ -126,6 +221,40 @@ def randomProgram : Eff [Random] (Nat × Nat × Bool) := do
   (randomProgram
     |> evalRandom 123
     |> run) == (1, 10, true)
+
+def randomSnapshot123 : Snapshot :=
+  [ { effect := "Random"
+      request :=
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "nat")
+          , ("lo", Lean.toJson 0)
+          , ("hi", Lean.toJson 6)
+          ]
+      response := Lean.toJson 1 }
+  , { effect := "Random"
+      request :=
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "nat")
+          , ("lo", Lean.toJson 10)
+          , ("hi", Lean.toJson 12)
+          ]
+      response := Lean.toJson 10 }
+  , { effect := "Random"
+      request := Lean.Json.mkObj [("op", Lean.Json.str "bool")]
+      response := Lean.toJson true }
+  ]
+
+#guard
+  (randomProgram
+    |> recordSnapshot
+    |> evalRandom 123
+    |> runWriter (ω := SnapshotEvent)
+    |> run) == ((1, 10, true), randomSnapshot123)
+
+#guard
+  match randomProgram |> replaySnapshot randomSnapshot123 with
+  | Except.ok (1, 10, true) => true
+  | _ => false
 
 def addGet (x : Nat) : Eff [Reader Nat] Nat := do
   let env ← ask

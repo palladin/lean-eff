@@ -53,10 +53,60 @@ inductive Command where
   | wait
 deriving BEq, Inhabited, Repr
 
+def Command.label : Command → String
+  | .left => "left"
+  | .right => "right"
+  | .down => "down"
+  | .rotate => "rotate"
+  | .drop => "drop"
+  | .quit => "quit"
+  | .wait => "wait"
+
+def Command.parse? : String → Option Command
+  | "left" => some .left
+  | "right" => some .right
+  | "down" => some .down
+  | "rotate" => some .rotate
+  | "drop" => some .drop
+  | "quit" => some .quit
+  | "wait" => some .wait
+  | _ => none
+
+instance : ToString Command where
+  toString := Command.label
+
 inductive Terminal : Effect where
   | draw : String → Terminal Unit
   | poll : Terminal Command
   | sleep : Nat → Terminal Unit
+
+def decodeUnitJson? : Lean.Json → Option Unit
+  | Lean.Json.null => some ()
+  | _ => none
+
+instance : SnapshotCodec Terminal where
+  effectName := "Terminal"
+  encodeRequest
+    | Terminal.draw frame =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "draw")
+          , ("frame", Lean.Json.str frame)
+          ]
+    | Terminal.poll =>
+        Lean.Json.mkObj [("op", Lean.Json.str "poll")]
+    | Terminal.sleep ms =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "sleep")
+          , ("ms", Lean.toJson ms)
+          ]
+  encodeResponse
+    | Terminal.draw _, () => Lean.Json.null
+    | Terminal.poll, command => Lean.Json.str (toString command)
+    | Terminal.sleep _, () => Lean.Json.null
+  decodeResponse?
+    | Terminal.draw _, value => decodeUnitJson? value
+    | Terminal.poll, value => value.getStr?.toOption.bind Command.parse?
+    | Terminal.sleep _, value => decodeUnitJson? value
 
 abbrev GameEff (α : Type) :=
   Eff [Reader Config, State Game, Writer String, ExceptE Exit, Random, Terminal] α
@@ -408,6 +458,9 @@ def buildGame (cfg : Config) : Eff [Random, Terminal] ((Except Exit Unit × Game
 def runGameLogic (cfg : Config) (seed : Nat) : Eff [Terminal] ((Except Exit Unit × Game) × List String) :=
   evalRandom seed (buildGame cfg)
 
+abbrev GameResult :=
+  (Except Exit Unit × Game) × List String
+
 partial def runTerminalIO {α : Type} : Eff [Terminal] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
@@ -429,6 +482,120 @@ partial def runTerminalIO {α : Type} : Eff [Terminal] α → IO α
 def runGame (cfg : Config) : IO ((Except Exit Unit × Game) × List String) := do
   let seed ← IO.rand 0 1000000000
   runTerminalIO (runGameLogic cfg seed)
+
+def runGameRecording (cfg : Config) : IO (GameResult × Snapshot) := do
+  let seed ← IO.rand 0 1000000000
+  buildGame cfg
+    |> recordSnapshot
+    |> runWriter (ω := SnapshotEvent)
+    |> evalRandom seed
+    |> runTerminalIO
+
+def replayGame (cfg : Config) (snapshot : Snapshot) :
+    Except SnapshotReplayError GameResult :=
+  buildGame cfg
+    |> replaySnapshot snapshot
+
+structure ReplayState where
+  index : Nat
+  remaining : Snapshot
+
+def snapshotOp? (event : SnapshotEvent) : Option String :=
+  (event.request.getObjVal? "op").toOption.bind fun opJson =>
+    opJson.getStr?.toOption
+
+def isReplayDisplayEvent (event : SnapshotEvent) : Bool :=
+  event.effect == "Terminal" &&
+    (snapshotOp? event == some "draw" || snapshotOp? event == some "sleep")
+
+partial def ReplayState.dropDisplayEvents (state : ReplayState) : ReplayState :=
+  match state.remaining with
+  | event :: rest =>
+      if isReplayDisplayEvent event then
+        ReplayState.dropDisplayEvents
+          { index := state.index + 1, remaining := rest }
+      else
+        state
+  | [] => state
+
+def ReplayState.consumeDisplayEvent (state : ReplayState) : ReplayState :=
+  match state.remaining with
+  | event :: rest =>
+      if isReplayDisplayEvent event then
+        { index := state.index + 1, remaining := rest }
+      else
+        state
+  | [] => state
+
+def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
+    (request : t α) (state : ReplayState) :
+    Except SnapshotReplayError (α × ReplayState) :=
+  let state := state.dropDisplayEvents
+  let actual := SnapshotCodec.requestOf request
+  match state.remaining with
+  | [] => Except.error (SnapshotReplayError.snapshotEnded state.index actual)
+      | event :: rest =>
+      if SnapshotCodec.matchesRequest request event then
+        match SnapshotCodec.decodeResponse? request event.response with
+        | some response =>
+            Except.ok (response, { index := state.index + 1, remaining := rest })
+        | none =>
+            Except.error
+              (SnapshotReplayError.responseDecodeFailed state.index event actual)
+      else
+        Except.error (SnapshotReplayError.eventMismatch state.index event actual)
+
+partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
+    (state : ReplayState) : Eff [Random, Terminal] α →
+    IO (Except SnapshotReplayError (α × ReplayState))
+  | Eff.pure x =>
+      let state := state.dropDisplayEvents
+      match state.remaining with
+      | [] => pure (Except.ok (x, state))
+      | _ => pure (Except.error (SnapshotReplayError.unusedEvents state.index state.remaining))
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match consumeSnapshotResponse request state with
+          | Except.ok (response, state) =>
+              replayGameAnimatedLoop state (Arrs.apply q response)
+          | Except.error error => pure (Except.error error)
+      | OpenUnion.there terminalUnion =>
+          match terminalUnion with
+          | OpenUnion.here request =>
+              match request with
+              | Terminal.draw frame => do
+                  IO.println frame
+                  replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
+              | Terminal.poll =>
+                  match consumeSnapshotResponse Terminal.poll state with
+                  | Except.ok (response, state) =>
+                      replayGameAnimatedLoop state (Arrs.apply q response)
+                  | Except.error error => pure (Except.error error)
+              | Terminal.sleep ms => do
+                  IO.sleep (UInt32.ofNat ms)
+                  replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
+          | OpenUnion.there rest => OpenUnion.absurd rest
+
+def replayGameAnimated (cfg : Config) (snapshot : Snapshot) :
+    IO (Except SnapshotReplayError GameResult) := do
+  let result ←
+    replayGameAnimatedLoop
+      { index := 0, remaining := snapshot }
+      (buildGame cfg)
+  match result with
+  | Except.ok (result, _) => pure (Except.ok result)
+  | Except.error error => pure (Except.error error)
+
+def writeSnapshotJson (path : String) (snapshot : Snapshot) : IO Unit :=
+  IO.FS.writeFile (System.FilePath.mk path) (Snapshot.toJsonString snapshot ++ "\n")
+
+def readSnapshotJson (path : String) : IO Snapshot := do
+  let contents ← IO.FS.readFile (System.FilePath.mk path)
+  match Snapshot.fromJsonString contents with
+  | Except.ok snapshot => pure snapshot
+  | Except.error error =>
+      throw (IO.userError s!"could not read snapshot JSON from {path}: {error}")
 
 def printEvents (events : List String) : IO Unit := do
   if events.isEmpty then
@@ -465,18 +632,81 @@ def withRawTerminal (body : IO α) : IO α := do
     restoreTerminal saved
     throw e
 
-def main : IO Unit := do
-  let cfg := defaultConfig
-  IO.println "ASCII Tetris"
-  IO.println "Immediate controls: a/d/s/w, arrow keys, space, q."
-  let ((outcome, finalGame), events) ← withRawTerminal (runGame cfg)
+def usage : String :=
+  String.intercalate "\n"
+    [ "usage:"
+    , "  lake exe ascii_tetris"
+    , "  lake exe ascii_tetris --record trace.json"
+    , "  lake exe ascii_tetris --replay trace.json"
+    , "  lake exe ascii_tetris --check trace.json"
+    ]
+
+inductive RunMode where
+  | play
+  | record (path : String)
+  | replay (path : String)
+  | check (path : String)
+  | help
+
+def parseRunMode : List String → Except String RunMode
+  | [] => Except.ok .play
+  | ["--record", path] => Except.ok (.record path)
+  | ["--replay", path] => Except.ok (.replay path)
+  | ["--check", path] => Except.ok (.check path)
+  | ["--help"] => Except.ok .help
+  | _ => Except.error usage
+
+def printSummary (result : GameResult) : IO Unit := do
+  let ((outcome, finalGame), events) := result
   match outcome with
   | Except.ok _ => IO.println "Finished."
   | Except.error reason => IO.println s!"Stopped: {exitMessage reason}"
   IO.println s!"Final score: {finalGame.score}, lines: {finalGame.lines}"
   printEvents events
 
+def printIntro : IO Unit := do
+  IO.println "ASCII Tetris"
+  IO.println "Immediate controls: a/d/s/w, arrow keys, space, q."
+
+def main (args : List String) : IO Unit := do
+  let cfg := defaultConfig
+  let mode ←
+    match parseRunMode args with
+    | Except.ok mode => pure mode
+    | Except.error message => throw (IO.userError message)
+  match mode with
+  | RunMode.play => do
+      printIntro
+      let result ← withRawTerminal (runGame cfg)
+      printSummary result
+  | RunMode.record path => do
+      printIntro
+      IO.println s!"Recording snapshot to {path}"
+      let (result, snapshot) ← withRawTerminal (runGameRecording cfg)
+      writeSnapshotJson path snapshot
+      IO.println s!"Recorded {snapshot.length} effect events."
+      printSummary result
+  | RunMode.replay path => do
+      let snapshot ← readSnapshotJson path
+      let result ← withRawTerminal (replayGameAnimated cfg snapshot)
+      match result with
+      | Except.ok result => do
+          IO.println s!"Replay animation consumed {snapshot.length} snapshot events from {path}."
+          printSummary result
+      | Except.error error =>
+          throw (IO.userError s!"Replay diverged: {repr error}")
+  | RunMode.check path => do
+      let snapshot ← readSnapshotJson path
+      match replayGame cfg snapshot with
+      | Except.ok result => do
+          IO.println s!"Snapshot check matched {snapshot.length} effect events from {path}."
+          printSummary result
+      | Except.error error =>
+          throw (IO.userError s!"Snapshot check diverged: {repr error}")
+  | RunMode.help =>
+      IO.println usage
+
 end Examples.AsciiTetris
 
-def main : IO Unit :=
-  Examples.AsciiTetris.main
+def main (args : List String) : IO Unit :=
+  Examples.AsciiTetris.main args

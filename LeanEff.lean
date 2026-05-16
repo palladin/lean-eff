@@ -5,3 +5,4 @@ import LeanEff.Effects.State
 import LeanEff.Effects.Except
 import LeanEff.Effects.Random
 import LeanEff.Effects.LiftIO
+import LeanEff.Debug.Snapshot
