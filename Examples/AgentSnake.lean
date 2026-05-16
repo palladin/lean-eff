@@ -582,50 +582,6 @@ private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
                       runArenaThreadedIO host (Arrs.apply q ())
               | OpenUnion.there rest => OpenUnion.absurd rest
 
-private partial def runArenaThreadedRecordingIO {α : Type} (host : AgentHostIO)
-    (index : Nat) :
-    Eff [Writer SnapshotEvent, AgentHost, Display World, Sleep] α →
-      IO (α × Snapshot)
-  | Eff.pure x => pure (x, [])
-  | Eff.impure u q =>
-      match u with
-      | OpenUnion.here request =>
-          match request with
-          | Writer.tell event => do
-              let (result, events) ←
-                runArenaThreadedRecordingIO host (index + 1) (Arrs.apply q ())
-              pure (result, event :: events)
-      | OpenUnion.there agentUnion =>
-          match agentUnion with
-          | OpenUnion.here request =>
-              match request with
-              | AgentHost.spawn profile turns => do
-                  spawnAgentIO host profile turns
-                  runArenaThreadedRecordingIO host index (Arrs.apply q ())
-              | AgentHost.snapshot world => do
-                  let wires ← host.wires.get
-                  for wire in wires do
-                    Std.Channel.Sync.send wire.views (viewFor world wire.profile)
-                  runArenaThreadedRecordingIO host index (Arrs.apply q ())
-              | AgentHost.moves => do
-                  let moves ← drainMoves host.moveQueue []
-                  runArenaThreadedRecordingIO host index (Arrs.apply q moves)
-          | OpenUnion.there displayUnion =>
-              match displayUnion with
-              | OpenUnion.here request =>
-                  match request with
-                  | Display.draw world => do
-                      IO.print (renderWorld world)
-                      runArenaThreadedRecordingIO host index (Arrs.apply q ())
-              | OpenUnion.there sleepUnion =>
-                  match sleepUnion with
-                  | OpenUnion.here request =>
-                      match request with
-                      | Sleep.sleepMs ms => do
-                          IO.sleep (UInt32.ofNat ms)
-                          runArenaThreadedRecordingIO host index (Arrs.apply q ())
-                  | OpenUnion.there rest => OpenUnion.absurd rest
-
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
   let tasks ← host.tasks.get
   tasks.reverse.mapM fun task => IO.ofExcept task.get
@@ -654,8 +610,9 @@ private def runArenaThreadedRecording (cfg : ArenaConfig) (seed : Nat)
     (world : World) (host : AgentHostIO) : IO (ArenaResult × Snapshot) :=
   buildArena cfg world
     |> recordSnapshot
+    |> runWriter (ω := SnapshotEvent)
     |> evalRandom seed
-    |> runArenaThreadedRecordingIO host 0
+    |> runArenaThreadedIO host
 
 private partial def runArenaDisplayIO {α : Type} :
     Eff [Display World, Sleep] α → IO α
@@ -779,60 +736,6 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
                     (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
               | OpenUnion.there rest => OpenUnion.absurd rest
 
-private partial def runArenaCoopRecordingIO {α : Type} [Inhabited α]
-    (host : CoopHost) (index : Nat) :
-    Eff [Writer SnapshotEvent, AgentHost, Display World, Sleep] α →
-      IO ((α × Snapshot) × AgentLogs)
-  | Eff.pure x => pure ((x, []), coopAgentLogs host)
-  | Eff.impure u q =>
-      match u with
-      | OpenUnion.here request =>
-          match request with
-          | Writer.tell event => do
-              let ((result, events), logs) ←
-                runArenaCoopRecordingIO host (index + 1) (Arrs.apply q ())
-              pure ((result, event :: events), logs)
-      | OpenUnion.there agentUnion =>
-          match agentUnion with
-          | OpenUnion.here request =>
-              match request with
-              | AgentHost.spawn profile turns =>
-                  let agent :=
-                    { profile
-                      program := buildAgentProgram profile turns
-                      logs? := none }
-                  runArenaCoopRecordingIO
-                    { host with agents := host.agents ++ [agent] }
-                    index
-                    (Arrs.apply q ())
-              | AgentHost.snapshot world =>
-                  let (agents, moves) := stepCoopAgents world host.agents
-                  runArenaCoopRecordingIO
-                    { agents
-                      pendingMoves := host.pendingMoves ++ moves }
-                    index
-                    (Arrs.apply q ())
-              | AgentHost.moves =>
-                  runArenaCoopRecordingIO
-                    { host with pendingMoves := [] }
-                    index
-                    (Arrs.apply q host.pendingMoves)
-          | OpenUnion.there displayUnion =>
-              match displayUnion with
-              | OpenUnion.here request =>
-                  match request with
-                  | Display.draw world => do
-                      IO.print (renderWorld world)
-                      runArenaCoopRecordingIO host index (Arrs.apply q ())
-              | OpenUnion.there sleepUnion =>
-                  match sleepUnion with
-                  | OpenUnion.here request =>
-                      match request with
-                      | Sleep.sleepMs ms => do
-                          IO.sleep (UInt32.ofNat ms)
-                          runArenaCoopRecordingIO host index (Arrs.apply q ())
-                  | OpenUnion.there rest => OpenUnion.absurd rest
-
 private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
     IO (ArenaResult × AgentLogs) :=
   buildArena cfg world
@@ -844,8 +747,10 @@ private def runArenaCoopRecording (cfg : ArenaConfig) (seed : Nat)
     (world : World) : IO ((ArenaResult × Snapshot) × AgentLogs) :=
   buildArena cfg world
     |> recordSnapshot
+    |> runWriter (ω := SnapshotEvent)
     |> evalRandom seed
-    |> runArenaCoopRecordingIO CoopHost.empty 0
+    |> runAgentHostCoop CoopHost.empty
+    |> runArenaDisplayIO
 
 def withArenaScreen (body : IO α) : IO α := do
   IO.print enterScreen
