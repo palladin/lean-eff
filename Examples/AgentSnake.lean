@@ -8,7 +8,7 @@ namespace Examples.AgentSnake
 structure Point where
   x : Int
   y : Int
-deriving BEq, Inhabited, Repr
+deriving BEq, Inhabited, Repr, Lean.ToJson, Lean.FromJson
 
 def p (x y : Int) : Point :=
   { x, y }
@@ -43,10 +43,27 @@ def name : Direction → String
   | .left => "left"
   | .right => "right"
 
+def parse? : String → Option Direction
+  | "up" => some .up
+  | "down" => some .down
+  | "left" => some .left
+  | "right" => some .right
+  | _ => none
+
 end Direction
 
 instance : ToString Direction where
   toString := Direction.name
+
+instance : Lean.ToJson Direction where
+  toJson dir := Lean.Json.str (toString dir)
+
+instance : Lean.FromJson Direction where
+  fromJson? json := do
+    let value ← json.getStr?
+    match Direction.parse? value with
+    | some dir => pure dir
+    | none => Except.error s!"unknown direction: {value}"
 
 structure AgentProfile where
   id : Nat
@@ -54,7 +71,7 @@ structure AgentProfile where
   headMark : String
   bodyMark : String
   seed : Nat
-deriving Inhabited, Repr
+deriving Inhabited, Repr, Lean.ToJson, Lean.FromJson
 
 structure Snake where
   id : Nat
@@ -65,12 +82,12 @@ structure Snake where
   dir : Direction
   alive : Bool
   score : Nat
-deriving Inhabited, Repr
+deriving Inhabited, Repr, Lean.ToJson, Lean.FromJson
 
 structure AgentMove where
   agentId : Nat
   dir : Direction
-deriving Inhabited, Repr
+deriving Inhabited, Repr, Lean.ToJson, Lean.FromJson
 
 structure World where
   width : Nat
@@ -79,7 +96,7 @@ structure World where
   food : Point
   snakes : List Snake
   events : List String
-deriving Inhabited, Repr
+deriving Inhabited, Repr, Lean.ToJson, Lean.FromJson
 
 structure WorldView where
   tick : Nat
@@ -112,6 +129,36 @@ inductive AgentHost : Effect where
   | spawn : AgentProfile → Nat → AgentHost Unit
   | snapshot : World → AgentHost Unit
   | moves : AgentHost (List AgentMove)
+
+def decodeUnitJson? : Lean.Json → Option Unit
+  | Lean.Json.null => some ()
+  | _ => none
+
+instance : SnapshotCodec AgentHost where
+  effectName := "AgentHost"
+  encodeRequest
+    | AgentHost.spawn profile turns =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "spawn")
+          , ("profile", Lean.toJson profile)
+          , ("turns", Lean.toJson turns)
+          ]
+    | AgentHost.snapshot world =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "snapshot")
+          , ("world", Lean.toJson world)
+          ]
+    | AgentHost.moves =>
+        Lean.Json.mkObj [("op", Lean.Json.str "moves")]
+  encodeResponse
+    | AgentHost.spawn _ _, () => Lean.Json.null
+    | AgentHost.snapshot _, () => Lean.Json.null
+    | AgentHost.moves, moves => Lean.toJson moves
+  decodeResponse?
+    | AgentHost.spawn _ _, value => decodeUnitJson? value
+    | AgentHost.snapshot _, value => decodeUnitJson? value
+    | AgentHost.moves, value =>
+        (Lean.fromJson? value : Except String (List AgentMove)).toOption
 
 def spawnAgent {r : List Effect} [Member AgentHost r]
     (profile : AgentProfile) (turns : Nat) : Eff r Unit :=
@@ -385,6 +432,21 @@ def exitScreen : String :=
 def framePrefix : String :=
   "\x1b[H\x1b[J"
 
+def ansi (code text : String) : String :=
+  "\x1b[" ++ code ++ "m" ++ text ++ "\x1b[0m"
+
+def snakeColor (id : Nat) : String :=
+  match id % 6 with
+  | 0 => "1;36"
+  | 1 => "1;32"
+  | 2 => "1;35"
+  | 3 => "1;33"
+  | 4 => "1;34"
+  | _ => "1;91"
+
+def snakeText (snake : Snake) (mark : String) : String :=
+  ansi (snakeColor snake.id) mark
+
 def snakeAt? (world : World) (pt : Point) : Option Snake :=
   world.snakes.find? fun snake => snake.body.any fun cell => cell == pt
 
@@ -393,13 +455,13 @@ def headAt? (world : World) (pt : Point) : Option Snake :=
 
 def cellText (world : World) (pt : Point) : String :=
   if pt == world.food then
-    "*"
+    ansi "1;31" "*"
   else
     match headAt? world pt with
-    | some snake => snake.headMark
+    | some snake => snakeText snake "*"
     | none =>
         match snakeAt? world pt with
-        | some snake => snake.bodyMark
+        | some snake => snakeText snake snake.bodyMark
         | none => " "
 
 def renderRow (world : World) (y : Nat) : String :=
@@ -411,7 +473,7 @@ def renderRow (world : World) (y : Nat) : String :=
 
 def statusLine (snake : Snake) : String :=
   let state := if snake.alive then "alive" else "out"
-  s!"{snake.headMark} {snake.name}: score {snake.score}, {state}"
+  s!"{snakeText snake "*"} {snake.name}: score {snake.score}, {state}"
 
 def renderWorld (world : World) : String :=
   let border := "+" ++ repeatString "-" world.width ++ "+"
@@ -419,16 +481,11 @@ def renderWorld (world : World) : String :=
     ((List.range world.height).map fun y => renderRow world y) ++
     [border]
   let scores := world.snakes.map statusLine
-  let events :=
-    if world.events.isEmpty then
-      ["events: none yet"]
-    else
-      ["events:"] ++ world.events.map (fun event => "  " ++ event)
   framePrefix ++
     String.intercalate "\n" (
     ["AGENT SNAKE ARENA",
      s!"tick {world.tick}    food at ({world.food.x}, {world.food.y})"] ++
-    board ++ [""] ++ scores ++ [""] ++ events ++
+    board ++ [""] ++ scores ++
     ["", "Agents are Eff programs scheduled by the selected AgentHost interpreter."]) ++ "\n"
 
 private structure AgentWire where
@@ -525,19 +582,80 @@ private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
                       runArenaThreadedIO host (Arrs.apply q ())
               | OpenUnion.there rest => OpenUnion.absurd rest
 
+private partial def runArenaThreadedRecordingIO {α : Type} (host : AgentHostIO)
+    (index : Nat) :
+    Eff [Writer SnapshotEvent, AgentHost, Display World, Sleep] α →
+      IO (α × Snapshot)
+  | Eff.pure x => pure (x, [])
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | Writer.tell event => do
+              let (result, events) ←
+                runArenaThreadedRecordingIO host (index + 1) (Arrs.apply q ())
+              pure (result, event :: events)
+      | OpenUnion.there agentUnion =>
+          match agentUnion with
+          | OpenUnion.here request =>
+              match request with
+              | AgentHost.spawn profile turns => do
+                  spawnAgentIO host profile turns
+                  runArenaThreadedRecordingIO host index (Arrs.apply q ())
+              | AgentHost.snapshot world => do
+                  let wires ← host.wires.get
+                  for wire in wires do
+                    Std.Channel.Sync.send wire.views (viewFor world wire.profile)
+                  runArenaThreadedRecordingIO host index (Arrs.apply q ())
+              | AgentHost.moves => do
+                  let moves ← drainMoves host.moveQueue []
+                  runArenaThreadedRecordingIO host index (Arrs.apply q moves)
+          | OpenUnion.there displayUnion =>
+              match displayUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Display.draw world => do
+                      IO.print (renderWorld world)
+                      runArenaThreadedRecordingIO host index (Arrs.apply q ())
+              | OpenUnion.there sleepUnion =>
+                  match sleepUnion with
+                  | OpenUnion.here request =>
+                      match request with
+                      | Sleep.sleepMs ms => do
+                          IO.sleep (UInt32.ofNat ms)
+                          runArenaThreadedRecordingIO host index (Arrs.apply q ())
+                  | OpenUnion.there rest => OpenUnion.absurd rest
+
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
   let tasks ← host.tasks.get
   tasks.reverse.mapM fun task => IO.ofExcept task.get
 
-private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
-    (host : AgentHostIO) :
-    IO ((Unit × World) × List String) :=
+private abbrev ArenaResult :=
+  (Unit × World) × List String
+
+private abbrev AgentLogs :=
+  List (List String)
+
+private def buildArena (cfg : ArenaConfig) (world : World) :
+    Eff [AgentHost, Display World, Sleep, Random] ArenaResult :=
   arenaProgram
     |> runReader cfg
     |> runState world
-    |> evalRandom seed
     |> runWriter
+
+private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
+    (host : AgentHostIO) :
+    IO ArenaResult :=
+  buildArena cfg world
+    |> evalRandom seed
     |> runArenaThreadedIO host
+
+private def runArenaThreadedRecording (cfg : ArenaConfig) (seed : Nat)
+    (world : World) (host : AgentHostIO) : IO (ArenaResult × Snapshot) :=
+  buildArena cfg world
+    |> recordSnapshot
+    |> evalRandom seed
+    |> runArenaThreadedRecordingIO host 0
 
 private partial def runArenaDisplayIO {α : Type} :
     Eff [Display World, Sleep] α → IO α
@@ -661,15 +779,73 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
                     (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
               | OpenUnion.there rest => OpenUnion.absurd rest
 
+private partial def runArenaCoopRecordingIO {α : Type} [Inhabited α]
+    (host : CoopHost) (index : Nat) :
+    Eff [Writer SnapshotEvent, AgentHost, Display World, Sleep] α →
+      IO ((α × Snapshot) × AgentLogs)
+  | Eff.pure x => pure ((x, []), coopAgentLogs host)
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | Writer.tell event => do
+              let ((result, events), logs) ←
+                runArenaCoopRecordingIO host (index + 1) (Arrs.apply q ())
+              pure ((result, event :: events), logs)
+      | OpenUnion.there agentUnion =>
+          match agentUnion with
+          | OpenUnion.here request =>
+              match request with
+              | AgentHost.spawn profile turns =>
+                  let agent :=
+                    { profile
+                      program := buildAgentProgram profile turns
+                      logs? := none }
+                  runArenaCoopRecordingIO
+                    { host with agents := host.agents ++ [agent] }
+                    index
+                    (Arrs.apply q ())
+              | AgentHost.snapshot world =>
+                  let (agents, moves) := stepCoopAgents world host.agents
+                  runArenaCoopRecordingIO
+                    { agents
+                      pendingMoves := host.pendingMoves ++ moves }
+                    index
+                    (Arrs.apply q ())
+              | AgentHost.moves =>
+                  runArenaCoopRecordingIO
+                    { host with pendingMoves := [] }
+                    index
+                    (Arrs.apply q host.pendingMoves)
+          | OpenUnion.there displayUnion =>
+              match displayUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Display.draw world => do
+                      IO.print (renderWorld world)
+                      runArenaCoopRecordingIO host index (Arrs.apply q ())
+              | OpenUnion.there sleepUnion =>
+                  match sleepUnion with
+                  | OpenUnion.here request =>
+                      match request with
+                      | Sleep.sleepMs ms => do
+                          IO.sleep (UInt32.ofNat ms)
+                          runArenaCoopRecordingIO host index (Arrs.apply q ())
+                  | OpenUnion.there rest => OpenUnion.absurd rest
+
 private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
-    IO (((Unit × World) × List String) × List (List String)) :=
-  arenaProgram
-    |> runReader cfg
-    |> runState world
+    IO (ArenaResult × AgentLogs) :=
+  buildArena cfg world
     |> evalRandom seed
-    |> runWriter
     |> runAgentHostCoop CoopHost.empty
     |> runArenaDisplayIO
+
+private def runArenaCoopRecording (cfg : ArenaConfig) (seed : Nat)
+    (world : World) : IO ((ArenaResult × Snapshot) × AgentLogs) :=
+  buildArena cfg world
+    |> recordSnapshot
+    |> evalRandom seed
+    |> runArenaCoopRecordingIO CoopHost.empty 0
 
 def withArenaScreen (body : IO α) : IO α := do
   IO.print enterScreen
@@ -693,9 +869,9 @@ def mkSnake (profile : AgentProfile) (body : List Point)
     score := 0 }
 
 def baseProfiles : List AgentProfile :=
-  [{ id := 1, name := "Ada", headMark := "A", bodyMark := "a", seed := 11 },
-   { id := 2, name := "Grace", headMark := "G", bodyMark := "g", seed := 29 },
-   { id := 3, name := "Edsger", headMark := "E", bodyMark := "e", seed := 47 }]
+  [{ id := 1, name := "Ada", headMark := "*", bodyMark := "*", seed := 11 },
+   { id := 2, name := "Grace", headMark := "*", bodyMark := "*", seed := 29 },
+   { id := 3, name := "Edsger", headMark := "*", bodyMark := "*", seed := 47 }]
 
 def seedProfiles (seed : Nat) (profiles : List AgentProfile) : List AgentProfile :=
   profiles.zipIdx.map fun (profile, idx) =>
@@ -718,6 +894,148 @@ def initialWorld (profiles : List AgentProfile) : World :=
 def defaultConfig (profiles : List AgentProfile) : ArenaConfig :=
   { maxTicks := 90, tickMs := 75, thinkMs := 10, agents := profiles }
 
+def snapshotOp? (event : SnapshotEvent) : Option String :=
+  (event.request.getObjVal? "op").toOption.bind fun opJson =>
+    opJson.getStr?.toOption
+
+def isReplayOptionalEvent (event : SnapshotEvent) : Bool :=
+  (event.effect == "Display" && snapshotOp? event == some "draw") ||
+    (event.effect == "Sleep" && snapshotOp? event == some "sleep") ||
+      (event.effect == "AgentHost" &&
+        (snapshotOp? event == some "spawn" || snapshotOp? event == some "snapshot"))
+
+structure ReplayState where
+  index : Nat
+  remaining : Snapshot
+
+def eventHasOp (effect op : String) (event : SnapshotEvent) : Bool :=
+  event.effect == effect && snapshotOp? event == some op
+
+def ReplayState.consumeOptionalEvent (state : ReplayState)
+    (effect op : String) : Option (Nat × SnapshotEvent) × ReplayState :=
+  match state.remaining with
+  | event :: rest =>
+      if eventHasOp effect op event then
+        (some (state.index, event), { index := state.index + 1, remaining := rest })
+      else
+        (none, state)
+  | [] => (none, state)
+
+partial def ReplayState.dropOptionalEvents (state : ReplayState) : ReplayState :=
+  match state.remaining with
+  | event :: rest =>
+      if isReplayOptionalEvent event then
+        ReplayState.dropOptionalEvents
+          { index := state.index + 1, remaining := rest }
+      else
+        state
+  | [] => state
+
+def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
+    (request : t α) (state : ReplayState) :
+    Except SnapshotReplayError (α × ReplayState) :=
+  let state := state.dropOptionalEvents
+  let actual := SnapshotCodec.requestOf request
+  match state.remaining with
+  | [] => Except.error (SnapshotReplayError.snapshotEnded state.index actual)
+  | event :: rest =>
+      if SnapshotCodec.matchesRequest request event then
+        match SnapshotCodec.decodeResponse? request event.response with
+        | some response =>
+            Except.ok (response, { index := state.index + 1, remaining := rest })
+        | none =>
+            Except.error
+              (SnapshotReplayError.responseDecodeFailed state.index event actual)
+      else
+        Except.error (SnapshotReplayError.eventMismatch state.index event actual)
+
+partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
+    (state : ReplayState) : Eff [AgentHost, Display World, Sleep, Random] α →
+    IO (Except SnapshotReplayError (α × ReplayState))
+  | Eff.pure x =>
+      let state := state.dropOptionalEvents
+      match state.remaining with
+      | [] => pure (Except.ok (x, state))
+      | _ => pure (Except.error (SnapshotReplayError.unusedEvents state.index state.remaining))
+  | Eff.impure u q =>
+      match u with
+      | OpenUnion.here request =>
+          match request with
+          | AgentHost.spawn _ _ =>
+              let (_, state) := state.consumeOptionalEvent "AgentHost" "spawn"
+              replayArenaAnimatedLoop state (Arrs.apply q ())
+          | AgentHost.snapshot _ =>
+              let (_, state) := state.consumeOptionalEvent "AgentHost" "snapshot"
+              replayArenaAnimatedLoop state (Arrs.apply q ())
+          | AgentHost.moves =>
+              match consumeSnapshotResponse AgentHost.moves state with
+              | Except.ok (moves, state) =>
+                  replayArenaAnimatedLoop state (Arrs.apply q moves)
+              | Except.error error => pure (Except.error error)
+      | OpenUnion.there displayUnion =>
+          match displayUnion with
+          | OpenUnion.here request =>
+              match request with
+              | Display.draw world => do
+                  let (_, state) := state.consumeOptionalEvent "Display" "draw"
+                  IO.print (renderWorld world)
+                  replayArenaAnimatedLoop state (Arrs.apply q ())
+          | OpenUnion.there sleepUnion =>
+              match sleepUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Sleep.sleepMs ms => do
+                      let (_, state) := state.consumeOptionalEvent "Sleep" "sleep"
+                      IO.sleep (UInt32.ofNat ms)
+                      replayArenaAnimatedLoop state (Arrs.apply q ())
+              | OpenUnion.there randomUnion =>
+                  match randomUnion with
+                  | OpenUnion.here request =>
+                      match consumeSnapshotResponse request state with
+                      | Except.ok (response, state) =>
+                          replayArenaAnimatedLoop state (Arrs.apply q response)
+                      | Except.error error => pure (Except.error error)
+                  | OpenUnion.there rest => OpenUnion.absurd rest
+
+def replayArenaAnimated (cfg : ArenaConfig) (world : World) (snapshot : Snapshot) :
+    IO (Except SnapshotReplayError ArenaResult) := do
+  let result ←
+    replayArenaAnimatedLoop
+      { index := 0, remaining := snapshot }
+      (buildArena cfg world)
+  match result with
+  | Except.ok (result, _) => pure (Except.ok result)
+  | Except.error error => pure (Except.error error)
+
+def checkArenaSnapshot (cfg : ArenaConfig) (world : World)
+    (snapshot : Snapshot) : Except SnapshotReplayError ArenaResult :=
+  buildArena cfg world
+    |> replaySnapshot snapshot
+
+def spawnProfile? (event : SnapshotEvent) : Option AgentProfile := do
+  if event.effect == "AgentHost" && snapshotOp? event == some "spawn" then
+    let profileJson ← (event.request.getObjVal? "profile").toOption
+    (Lean.fromJson? profileJson : Except String AgentProfile).toOption
+  else
+    none
+
+def profilesFromSnapshot (snapshot : Snapshot) : Except String (List AgentProfile) :=
+  let profiles := snapshot.filterMap spawnProfile?
+  if profiles.isEmpty then
+    Except.error "snapshot has no AgentHost spawn events"
+  else
+    Except.ok profiles
+
+def writeSnapshotJson (path : String) (snapshot : Snapshot) : IO Unit :=
+  IO.FS.writeFile (System.FilePath.mk path) (Snapshot.toJsonString snapshot ++ "\n")
+
+def readSnapshotJson (path : String) : IO Snapshot := do
+  let contents ← IO.FS.readFile (System.FilePath.mk path)
+  match Snapshot.fromJsonString contents with
+  | Except.ok snapshot => pure snapshot
+  | Except.error error =>
+      throw (IO.userError s!"could not read snapshot JSON from {path}: {error}")
+
 inductive Runtime where
   | threaded
   | cooperative
@@ -727,16 +1045,62 @@ def Runtime.label : Runtime → String
   | .threaded => "threaded tasks"
   | .cooperative => "single-threaded cooperative"
 
-def runtimeFromArgs (args : List String) : Except String Runtime :=
-  match args with
-  | [] => .ok .threaded
-  | ["--threaded"] => .ok .threaded
-  | ["--cooperative"] => .ok .cooperative
-  | _ => .error "usage: lake exe agent_snake_arena [--threaded|--cooperative]"
+inductive Action where
+  | play
+  | record (path : String)
+  | replay (path : String)
+  | check (path : String)
+  | help
+
+structure Cli where
+  runtime : Runtime
+  action : Action
+
+def usage : String :=
+  String.intercalate "\n"
+    [ "usage:"
+    , "  lake exe agent_snake_arena [--threaded|--cooperative]"
+    , "  lake exe agent_snake_arena --record trace.json [--threaded|--cooperative]"
+    , "  lake exe agent_snake_arena --replay trace.json"
+    , "  lake exe agent_snake_arena --check trace.json"
+    ]
+
+def setRuntime (runtime : Runtime) (cli : Cli) : Cli :=
+  { cli with runtime }
+
+def setAction (action : Action) (cli : Cli) : Except String Cli :=
+  match cli.action with
+  | .play => Except.ok { cli with action }
+  | .help => Except.error usage
+  | .record _ => Except.error usage
+  | .replay _ => Except.error usage
+  | .check _ => Except.error usage
+
+def parseCliLoop : List String → Cli → Except String Cli
+  | [], cli => Except.ok cli
+  | "--threaded" :: rest, cli =>
+      parseCliLoop rest (setRuntime .threaded cli)
+  | "--cooperative" :: rest, cli =>
+      parseCliLoop rest (setRuntime .cooperative cli)
+  | "--record" :: path :: rest, cli => do
+      let cli ← setAction (.record path) cli
+      parseCliLoop rest cli
+  | "--replay" :: path :: rest, cli => do
+      let cli ← setAction (.replay path) cli
+      parseCliLoop rest cli
+  | "--check" :: path :: rest, cli => do
+      let cli ← setAction (.check path) cli
+      parseCliLoop rest cli
+  | "--help" :: [], cli =>
+      setAction .help cli
+  | _, _ => Except.error usage
+
+def parseCli (args : List String) : Except String Cli :=
+  parseCliLoop args { runtime := .threaded, action := .play }
 
 private def runWithRuntime (runtime : Runtime) (cfg : ArenaConfig)
     (arenaSeed : Nat) (world : World) :
-    IO (((Unit × World) × List String) × List (List String)) := do
+    IO (ArenaResult × AgentLogs) := do
   match runtime with
   | .threaded =>
       let host ← newAgentHostIO
@@ -746,11 +1110,23 @@ private def runWithRuntime (runtime : Runtime) (cfg : ArenaConfig)
   | .cooperative =>
       withArenaScreen (runArenaCoop cfg arenaSeed world)
 
-def printSummary (runtime : Runtime) (arenaLog : List String)
-    (agentLogs : List (List String))
+private def runWithRuntimeRecording (runtime : Runtime) (cfg : ArenaConfig)
+    (arenaSeed : Nat) (world : World) :
+    IO ((ArenaResult × Snapshot) × AgentLogs) := do
+  match runtime with
+  | .threaded =>
+      let host ← newAgentHostIO
+      let result ← withArenaScreen (runArenaThreadedRecording cfg arenaSeed world host)
+      let agentLogs ← waitAgentLogs host
+      pure (result, agentLogs)
+  | .cooperative =>
+      withArenaScreen (runArenaCoopRecording cfg arenaSeed world)
+
+def printSummary (runtimeLabel : String) (arenaLog : List String)
+    (agentLogs : AgentLogs)
     (world : World) : IO Unit := do
   IO.println ""
-  IO.println s!"Runtime: {runtime.label}"
+  IO.println s!"Runtime: {runtimeLabel}"
   IO.println "Final scores"
   for snake in world.snakes do
     IO.println s!"- {snake.name}: {snake.score}"
@@ -759,17 +1135,58 @@ def printSummary (runtime : Runtime) (arenaLog : List String)
   IO.println s!"Agent thought entries: {(agentLogs.map List.length).foldl (· + ·) 0}"
 
 def main (args : List String) : IO Unit := do
-  let runtime ←
-    match runtimeFromArgs args with
-    | .ok runtime => pure runtime
+  let cli ←
+    match parseCli args with
+    | .ok cli => pure cli
     | .error message => throw (IO.userError message)
-  let arenaSeed ← IO.rand 0 1000000000
-  let agentSeed ← IO.rand 0 1000000000
-  let profiles := seedProfiles agentSeed baseProfiles
-  let cfg := defaultConfig profiles
-  let (((_, finalWorld), arenaLog), agentLogs) ←
-    runWithRuntime runtime cfg arenaSeed (initialWorld profiles)
-  printSummary runtime arenaLog agentLogs finalWorld
+  match cli.action with
+  | .help =>
+      IO.println usage
+  | .play => do
+      let arenaSeed ← IO.rand 0 1000000000
+      let agentSeed ← IO.rand 0 1000000000
+      let profiles := seedProfiles agentSeed baseProfiles
+      let cfg := defaultConfig profiles
+      let (((_, finalWorld), arenaLog), agentLogs) ←
+        runWithRuntime cli.runtime cfg arenaSeed (initialWorld profiles)
+      printSummary cli.runtime.label arenaLog agentLogs finalWorld
+  | .record path => do
+      let arenaSeed ← IO.rand 0 1000000000
+      let agentSeed ← IO.rand 0 1000000000
+      let profiles := seedProfiles agentSeed baseProfiles
+      let cfg := defaultConfig profiles
+      let ((((_, finalWorld), arenaLog), snapshot), agentLogs) ←
+        runWithRuntimeRecording cli.runtime cfg arenaSeed (initialWorld profiles)
+      writeSnapshotJson path snapshot
+      IO.println s!"Recorded {snapshot.length} effect events to {path}."
+      printSummary cli.runtime.label arenaLog agentLogs finalWorld
+  | .replay path => do
+      let snapshot ← readSnapshotJson path
+      let profiles ←
+        match profilesFromSnapshot snapshot with
+        | .ok profiles => pure profiles
+        | .error message => throw (IO.userError message)
+      let cfg := defaultConfig profiles
+      let result ← withArenaScreen (replayArenaAnimated cfg (initialWorld profiles) snapshot)
+      match result with
+      | .ok ((_, finalWorld), arenaLog) => do
+          IO.println s!"Replay animation consumed {snapshot.length} snapshot events from {path}."
+          printSummary "snapshot replay" arenaLog [] finalWorld
+      | .error error =>
+          throw (IO.userError s!"Replay diverged: {repr error}")
+  | .check path => do
+      let snapshot ← readSnapshotJson path
+      let profiles ←
+        match profilesFromSnapshot snapshot with
+        | .ok profiles => pure profiles
+        | .error message => throw (IO.userError message)
+      let cfg := defaultConfig profiles
+      match checkArenaSnapshot cfg (initialWorld profiles) snapshot with
+      | .ok ((_, finalWorld), arenaLog) => do
+          IO.println s!"Snapshot check matched {snapshot.length} effect events from {path}."
+          printSummary "snapshot check" arenaLog [] finalWorld
+      | .error error =>
+          throw (IO.userError s!"Snapshot check diverged: {repr error}")
 
 end Examples.AgentSnake
 

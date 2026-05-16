@@ -121,8 +121,8 @@ lake exe video_rental_shop
   an `AgentHost` effect to spawn AI agents, publish world snapshots, and gather
   agent moves. Each AI snake is an independent `AgentEff` program that observes
   snapshots and chooses moves. `Random` drives agent jitter and food placement,
-  and the same effects can run with either a threaded host interpreter or a
-  single-threaded cooperative interpreter.
+  snakes render as colored `*` cells, and the same effects can run with either a
+  threaded host interpreter or a single-threaded cooperative interpreter.
 
 Run it with:
 
@@ -134,6 +134,24 @@ Use the single-threaded cooperative interpreter with:
 
 ```sh
 lake exe agent_snake_arena --cooperative
+```
+
+Record a JSON snapshot of the arena with:
+
+```sh
+lake exe agent_snake_arena --record trace.json
+```
+
+Replay the recorded snake animation with:
+
+```sh
+lake exe agent_snake_arena --replay trace.json
+```
+
+Strictly verify the snapshot without animation with:
+
+```sh
+lake exe agent_snake_arena --check trace.json
 ```
 
 ## V1 Notes
