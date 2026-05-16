@@ -6,14 +6,20 @@ def readerProgram : Eff [Reader Nat] Nat := do
   let n ← ask
   pure (n + 1)
 
-#guard run (runReader 41 readerProgram) == 42
+#guard
+  (readerProgram
+    |> runReader 41
+    |> run) == 42
 
 def writerProgram : Eff [Writer String] Nat := do
   tell "begin"
   tell "end"
   pure 7
 
-#guard run (runWriter writerProgram) == (7, ["begin", "end"])
+#guard
+  (writerProgram
+    |> runWriter
+    |> run) == (7, ["begin", "end"])
 
 def mixedProgram : Eff [Reader Nat, Writer String, State Nat] Nat := do
   let env ← ask
@@ -23,7 +29,11 @@ def mixedProgram : Eff [Reader Nat, Writer String, State Nat] Nat := do
   pure (state + 1)
 
 #guard
-  run (runState (σ := Nat) 10 (runWriter (runReader 5 mixedProgram))) ==
+  (mixedProgram
+    |> runReader 5
+    |> runWriter
+    |> runState (σ := Nat) 10
+    |> run) ==
     ((11, ["env=5"]), 15)
 
 def exceptProgram : Eff [ExceptE String, State Nat] Nat := do
@@ -32,12 +42,22 @@ def exceptProgram : Eff [ExceptE String, State Nat] Nat := do
   pure 99
 
 #guard
-  match run (runState (σ := Nat) 0 (runExcept (ε := String) exceptProgram)) with
+  match
+      exceptProgram
+        |> runExcept (ε := String)
+        |> runState (σ := Nat) 0
+        |> run
+    with
   | (Except.error "boom", 5) => true
   | _ => false
 
 #guard
-  match run (runExcept (ε := String) (runState (σ := Nat) 0 exceptProgram)) with
+  match
+      exceptProgram
+        |> runState (σ := Nat) 0
+        |> runExcept (ε := String)
+        |> run
+    with
   | Except.error "boom" => true
   | _ => false
 
@@ -47,7 +67,12 @@ def caughtProgram : Eff [ExceptE String, State Nat] Nat :=
     pure (n + 1)
 
 #guard
-  match run (runState (σ := Nat) 0 (runExcept (ε := String) caughtProgram)) with
+  match
+      caughtProgram
+        |> runExcept (ε := String)
+        |> runState (σ := Nat) 0
+        |> run
+    with
   | (Except.ok 6, 5) => true
   | _ => false
 
@@ -74,8 +99,17 @@ def customProgram : Eff [Writer String, Prompt] Nat := do
     tell "no"
     pure 0
 
-#guard run (runWriter (runPrompt true customProgram)) == (1, ["yes"])
-#guard run (runWriter (runPrompt false customProgram)) == (0, ["no"])
+#guard
+  (customProgram
+    |> runPrompt true
+    |> runWriter
+    |> run) == (1, ["yes"])
+
+#guard
+  (customProgram
+    |> runPrompt false
+    |> runWriter
+    |> run) == (0, ["no"])
 
 def randomProgram : Eff [Random] (Nat × Nat × Bool) := do
   let low ← randNat 0 6
@@ -84,11 +118,14 @@ def randomProgram : Eff [Random] (Nat × Nat × Bool) := do
   pure (low, high, coin)
 
 #guard
-  match run (evalRandom 123 randomProgram) with
+  match randomProgram |> evalRandom 123 |> run with
   | (low, high, _) =>
       decide (low <= 6) && decide (10 <= high) && decide (high <= 12)
 
-#guard run (evalRandom 123 randomProgram) == (1, 10, true)
+#guard
+  (randomProgram
+    |> evalRandom 123
+    |> run) == (1, 10, true)
 
 def addGet (x : Nat) : Eff [Reader Nat] Nat := do
   let env ← ask
@@ -98,7 +135,10 @@ def addN : Nat → Eff [Reader Nat] Nat
   | 0 => pure 0
   | n + 1 => addN n >>= addGet
 
-#guard run (runReader 10 (addN 1000)) == 10000
+#guard
+  (addN 1000
+    |> runReader 10
+    |> run) == 10000
 
 def ioProgram : Eff [LiftIO] String := do
   let n ← liftIO (pure 7)

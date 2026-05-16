@@ -446,9 +446,10 @@ private abbrev AgentResult :=
 
 private def buildAgentProgram (profile : AgentProfile) (turns : Nat) :
     Eff [AgentRuntime] AgentResult :=
-  runWriter <|
-    runRandom profile.seed <|
-      runReader profile (agentLoop turns)
+  agentLoop turns
+    |> runReader profile
+    |> runRandom profile.seed
+    |> runWriter
 
 private structure AgentHostIO where
   moveQueue : Std.Channel.Sync AgentMove
@@ -533,11 +534,12 @@ private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
 private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
     (host : AgentHostIO) :
     IO ((Unit × World) × List String) :=
-  runArenaThreadedIO host <|
-    runWriter <|
-      evalRandom seed <|
-        runState world <|
-          runReader cfg arenaProgram
+  arenaProgram
+    |> runReader cfg
+    |> runState world
+    |> evalRandom seed
+    |> runWriter
+    |> runArenaThreadedIO host
 
 private partial def runArenaDisplayIO {α : Type} :
     Eff [ArenaRuntime] α → IO α
@@ -653,12 +655,13 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
 
 private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
     IO (((Unit × World) × List String) × List (List String)) :=
-  runArenaDisplayIO <|
-    runAgentHostCoop CoopHost.empty <|
-      runWriter <|
-        evalRandom seed <|
-          runState world <|
-            runReader cfg arenaProgram
+  arenaProgram
+    |> runReader cfg
+    |> runState world
+    |> evalRandom seed
+    |> runWriter
+    |> runAgentHostCoop CoopHost.empty
+    |> runArenaDisplayIO
 
 def withArenaScreen (body : IO α) : IO α := do
   IO.print enterScreen

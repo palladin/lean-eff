@@ -399,10 +399,11 @@ def exitMessage : Exit → String
 def buildGame (cfg : Config) : Eff [Random, Terminal] ((Except Exit Unit × Game) × List String) := do
   let first ← randomPiece cfg
   let next ← randomPiece cfg
-  runWriter <|
-    runState (initialGame first next) <|
-      runExcept (ε := Exit) <|
-        runReader cfg (gameLoop cfg.maxTurns)
+  gameLoop cfg.maxTurns
+    |> runReader cfg
+    |> runExcept (ε := Exit)
+    |> runState (initialGame first next)
+    |> runWriter
 
 def runGameLogic (cfg : Config) (seed : Nat) : Eff [Terminal] ((Except Exit Unit × Game) × List String) :=
   evalRandom seed (buildGame cfg)

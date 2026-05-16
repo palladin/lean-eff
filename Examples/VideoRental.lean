@@ -469,10 +469,11 @@ partial def runShopIO {α : Type}
 def runDemo (day : Day) : IO (Except ShopError Unit × List String) := do
   let conn ← openInMemorySqlite
   sqliteExec conn (initSql day)
-  runShopIO conn <|
-    runWriter <|
-      runExcept (ε := ShopError) <|
-        runReader ({ shopName := "Palladin's Video Rental" } : Config) appProgram
+  appProgram
+    |> runReader ({ shopName := "Palladin's Video Rental" } : Config)
+    |> runExcept (ε := ShopError)
+    |> runWriter
+    |> runShopIO conn
 
 def errorMessage : ShopError → String
   | .unknownCustomer id => s!"unknown customer #{id}"

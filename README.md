@@ -16,7 +16,10 @@ def program : Eff [Reader Nat, Writer String] Nat := do
   tell s!"n = {n}"
   pure (n + 1)
 
-#eval run (runWriter (runReader 41 program))
+#eval program
+  |> runReader 41
+  |> runWriter
+  |> run
 ```
 
 Effect rows are treated as set-like lists for handler lookup. A handler removes
