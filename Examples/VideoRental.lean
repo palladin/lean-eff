@@ -45,31 +45,8 @@ inductive ShopError where
   | invalidPeriod : Nat → ShopError
 deriving Inhabited, Repr
 
-inductive Clock : Effect where
-  | today : Clock Day
-
-def today {r : List Effect} [Member Clock r] : Eff r Day :=
-  send Clock.today
-
-def runClockAt {α : Type} {r r' : List Effect} [Remove Clock r r']
-    [Inhabited α]
-    (day : Day) : Eff r α → Eff r' α :=
-  handleRelay (t := Clock)
-    (ret := fun x => pure x)
-    (handle := fun request k =>
-      match request with
-      | Clock.today => k day)
-
-inductive Console : Effect where
-  | printLine : String → Console Unit
-  | readLine : Console String
-
-def printLine {r : List Effect} [Member Console r]
-    (line : String) : Eff r Unit :=
-  send (Console.printLine line)
-
-def readInput {r : List Effect} [Member Console r] : Eff r String :=
-  send Console.readLine
+def today {r : List Effect} [Member (Clock Day) r] : Eff r Day :=
+  now (τ := Day)
 
 inductive RentalRepo : Effect where
   | findCustomer : Nat → RentalRepo (Option Customer)
@@ -107,7 +84,7 @@ def listMovies {r : List Effect} [Member RentalRepo r] : Eff r (List Movie) :=
   send RentalRepo.listMovies
 
 abbrev ShopEff (α : Type) :=
-  Eff [Reader Config, Clock, RentalRepo, Writer String, ExceptE ShopError, Console] α
+  Eff [Reader Config, Clock Day, RentalRepo, Writer String, ExceptE ShopError, Console] α
 
 def formatDay (day : Day) : String :=
   s!"day {day}"
@@ -228,7 +205,7 @@ def showCustomers : ShopEff Unit := do
 
 def prompt (label : String) : ShopEff String := do
   printLine s!"> {label}"
-  readInput
+  readLine
 
 def promptNat (label : String) : ShopEff (Option Nat) := do
   let value ← prompt label
@@ -419,13 +396,13 @@ def currentUnixDay : IO Day := do
     pure (seconds.toNat / 86400)
 
 partial def runShopIO {α : Type}
-    (conn : SqliteConn) : Eff [Clock, RentalRepo, Console] α → IO α
+    (conn : SqliteConn) : Eff [Clock Day, RentalRepo, Console] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
       | OpenUnion.here request =>
           match request with
-          | Clock.today => do
+          | Clock.now => do
               let day ← currentUnixDay
               runShopIO conn (Arrs.apply q day)
       | OpenUnion.there repoUnion =>

@@ -5,4 +5,9 @@ import LeanEff.Effects.State
 import LeanEff.Effects.Except
 import LeanEff.Effects.Random
 import LeanEff.Effects.LiftIO
+import LeanEff.Effects.Clock
+import LeanEff.Effects.Console
+import LeanEff.Effects.Display
+import LeanEff.Effects.Input
+import LeanEff.Effects.Sleep
 import LeanEff.Debug.Snapshot

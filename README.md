@@ -34,6 +34,11 @@ in which handlers are called controls effect interaction.
 - `ExceptE ε`: `throw`, `tryCatch`, `runExcept`
 - `Random`: `randNat`, `randBool`, `runRandom`, `evalRandom`
 - `LiftIO`: `liftIO`, `runLiftIO`
+- `Clock τ`: `now`, `runClockAt`
+- `Console`: `printLine`, `readLine`, `runConsoleIO`
+- `Display frame`: `drawFrame`, `runDisplayIO`
+- `Input ι`: `pollInput`
+- `Sleep`: `sleepMs`, `runSleepIO`
 
 ## Debug Snapshots
 
@@ -62,8 +67,7 @@ def divergence :=
 
 Effects opt into snapshots through `SnapshotCodec`, which encodes effect
 requests and responses as structured `Lean.Json` values. LeanEff includes
-codecs for the built-in resumable effects: `Reader`, `Writer`, `State`, and
-`Random`.
+codecs for the built-in resumable effects.
 Snapshots are request/response traces, so an effect operation that never resumes
 does not produce an event through this middleware.
 
@@ -72,8 +76,8 @@ does not produce an event through this middleware.
 - `Examples.AsciiTetris`: an animated terminal Tetris clone with nonblocking
   controls, ANSI colors, and a next-piece preview. It uses `Reader` for
   configuration, `State` for the board, `Writer` for game events, `ExceptE` for
-  quit/game-over exits, `Random` for piece generation, and an example-specific
-  `Terminal` effect for terminal input/output.
+  quit/game-over exits, `Random` for piece generation, `Display String` for
+  drawing, `Input Command` for controls, and `Sleep` for frame pacing.
 
 Run it with:
 

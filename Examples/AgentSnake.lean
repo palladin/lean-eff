@@ -125,22 +125,16 @@ def agentMoves {r : List Effect} [Member AgentHost r] :
     Eff r (List AgentMove) :=
   send AgentHost.moves
 
-inductive ArenaRuntime : Effect where
-  | draw : World → ArenaRuntime Unit
-  | sleep : Nat → ArenaRuntime Unit
-
-def drawWorld {r : List Effect} [Member ArenaRuntime r]
+def drawWorld {r : List Effect} [Member (Display World) r]
     (world : World) : Eff r Unit :=
-  send (ArenaRuntime.draw world)
-
-def sleepMs {r : List Effect} [Member ArenaRuntime r] (ms : Nat) : Eff r Unit :=
-  send (ArenaRuntime.sleep ms)
+  drawFrame world
 
 abbrev AgentEff (α : Type) :=
   Eff [Reader AgentProfile, AgentRuntime, Random, Writer String] α
 
 abbrev ArenaEff (α : Type) :=
-  Eff [Reader ArenaConfig, State World, AgentHost, ArenaRuntime, Random, Writer String] α
+  Eff [Reader ArenaConfig, State World, AgentHost, Display World, Sleep, Random,
+    Writer String] α
 
 def move (pt : Point) (dir : Direction) : Point :=
   let d := dir.delta
@@ -498,7 +492,7 @@ private def spawnAgentIO (host : AgentHostIO) (profile : AgentProfile)
   host.tasks.modify fun tasks => task :: tasks
 
 private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
-    Eff [AgentHost, ArenaRuntime] α → IO α
+    Eff [AgentHost, Display World, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
@@ -519,13 +513,17 @@ private partial def runArenaThreadedIO {α : Type} (host : AgentHostIO) :
           match rest with
           | OpenUnion.here request =>
               match request with
-              | ArenaRuntime.draw world => do
+              | Display.draw world => do
                   IO.print (renderWorld world)
                   runArenaThreadedIO host (Arrs.apply q ())
-              | ArenaRuntime.sleep ms => do
-                  IO.sleep (UInt32.ofNat ms)
-                  runArenaThreadedIO host (Arrs.apply q ())
-          | OpenUnion.there rest => OpenUnion.absurd rest
+          | OpenUnion.there sleepUnion =>
+              match sleepUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Sleep.sleepMs ms => do
+                      IO.sleep (UInt32.ofNat ms)
+                      runArenaThreadedIO host (Arrs.apply q ())
+              | OpenUnion.there rest => OpenUnion.absurd rest
 
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
   let tasks ← host.tasks.get
@@ -542,19 +540,23 @@ private def runArenaThreaded (cfg : ArenaConfig) (seed : Nat) (world : World)
     |> runArenaThreadedIO host
 
 private partial def runArenaDisplayIO {α : Type} :
-    Eff [ArenaRuntime] α → IO α
+    Eff [Display World, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
       | OpenUnion.here request =>
           match request with
-          | ArenaRuntime.draw world => do
+          | Display.draw world => do
               IO.print (renderWorld world)
               runArenaDisplayIO (Arrs.apply q ())
-          | ArenaRuntime.sleep ms => do
-              IO.sleep (UInt32.ofNat ms)
-              runArenaDisplayIO (Arrs.apply q ())
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | OpenUnion.there sleepUnion =>
+          match sleepUnion with
+          | OpenUnion.here request =>
+              match request with
+              | Sleep.sleepMs ms => do
+                  IO.sleep (UInt32.ofNat ms)
+                  runArenaDisplayIO (Arrs.apply q ())
+          | OpenUnion.there rest => OpenUnion.absurd rest
 
 private structure CoopAgent where
   profile : AgentProfile
@@ -622,7 +624,8 @@ private def stepCoopAgents (world : World) (agents : List CoopAgent) :
     (([] : List CoopAgent), ([] : List AgentMove))
 
 private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost) :
-    Eff [AgentHost, ArenaRuntime] α → Eff [ArenaRuntime] (α × List (List String))
+    Eff [AgentHost, Display World, Sleep] α →
+      Eff [Display World, Sleep] (α × List (List String))
   | Eff.pure x => pure (x, coopAgentLogs host)
   | Eff.impure u q =>
       match u with
@@ -651,7 +654,12 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
           | OpenUnion.here request =>
               Eff.impure (OpenUnion.here request)
                 (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
-          | OpenUnion.there rest => OpenUnion.absurd rest
+          | OpenUnion.there sleepUnion =>
+              match sleepUnion with
+              | OpenUnion.here request =>
+                  Eff.impure (OpenUnion.there (OpenUnion.here request))
+                    (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
+              | OpenUnion.there rest => OpenUnion.absurd rest
 
 private def runArenaCoop (cfg : ArenaConfig) (seed : Nat) (world : World) :
     IO (((Unit × World) × List String) × List (List String)) :=

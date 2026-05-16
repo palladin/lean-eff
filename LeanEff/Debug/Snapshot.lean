@@ -3,6 +3,11 @@ import LeanEff.Effects.Reader
 import LeanEff.Effects.Writer
 import LeanEff.Effects.State
 import LeanEff.Effects.Random
+import LeanEff.Effects.Clock
+import LeanEff.Effects.Console
+import LeanEff.Effects.Display
+import LeanEff.Effects.Input
+import LeanEff.Effects.Sleep
 
 deriving instance Repr for Lean.Json
 
@@ -165,6 +170,69 @@ instance : SnapshotCodec Random where
   decodeResponse?
     | Random.nat _ _, value => decodeJson? (α := Nat) value
     | Random.bool, value => decodeJson? (α := Bool) value
+
+instance {τ : Type} [Lean.ToJson τ] [Lean.FromJson τ] :
+    SnapshotCodec (Clock τ) where
+  effectName := "Clock"
+  encodeRequest
+    | Clock.now => jsonOp "now"
+  encodeResponse
+    | Clock.now, value => Lean.toJson value
+  decodeResponse?
+    | Clock.now, value => decodeJson? value
+
+instance : SnapshotCodec Console where
+  effectName := "Console"
+  encodeRequest
+    | Console.printLine line =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "printLine")
+          , ("line", Lean.Json.str line)
+          ]
+    | Console.readLine => jsonOp "readLine"
+  encodeResponse
+    | Console.printLine _, () => jsonUnit
+    | Console.readLine, value => Lean.Json.str value
+  decodeResponse?
+    | Console.printLine _, value => decodeUnit? value
+    | Console.readLine, value => value.getStr?.toOption
+
+instance {frame : Type} [Lean.ToJson frame] :
+    SnapshotCodec (Display frame) where
+  effectName := "Display"
+  encodeRequest
+    | Display.draw frame =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "draw")
+          , ("frame", Lean.toJson frame)
+          ]
+  encodeResponse
+    | Display.draw _, () => jsonUnit
+  decodeResponse?
+    | Display.draw _, value => decodeUnit? value
+
+instance {ι : Type} [Lean.ToJson ι] [Lean.FromJson ι] :
+    SnapshotCodec (Input ι) where
+  effectName := "Input"
+  encodeRequest
+    | Input.poll => jsonOp "poll"
+  encodeResponse
+    | Input.poll, value => Lean.toJson value
+  decodeResponse?
+    | Input.poll, value => decodeJson? value
+
+instance : SnapshotCodec Sleep where
+  effectName := "Sleep"
+  encodeRequest
+    | Sleep.sleepMs ms =>
+        Lean.Json.mkObj
+          [ ("op", Lean.Json.str "sleep")
+          , ("ms", Lean.toJson ms)
+          ]
+  encodeResponse
+    | Sleep.sleepMs _, () => jsonUnit
+  decodeResponse?
+    | Sleep.sleepMs _, value => decodeUnit? value
 
 partial def recordSnapshot {r : List Effect} {α : Type} [SnapshotRow r]
     [Inhabited α] : Eff r α → Eff (Writer SnapshotEvent :: r) α

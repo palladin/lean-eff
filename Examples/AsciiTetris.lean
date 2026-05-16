@@ -75,50 +75,19 @@ def Command.parse? : String → Option Command
 instance : ToString Command where
   toString := Command.label
 
-inductive Terminal : Effect where
-  | draw : String → Terminal Unit
-  | poll : Terminal Command
-  | sleep : Nat → Terminal Unit
+instance : Lean.ToJson Command where
+  toJson command := Lean.Json.str (toString command)
 
-def decodeUnitJson? : Lean.Json → Option Unit
-  | Lean.Json.null => some ()
-  | _ => none
-
-instance : SnapshotCodec Terminal where
-  effectName := "Terminal"
-  encodeRequest
-    | Terminal.draw frame =>
-        Lean.Json.mkObj
-          [ ("op", Lean.Json.str "draw")
-          , ("frame", Lean.Json.str frame)
-          ]
-    | Terminal.poll =>
-        Lean.Json.mkObj [("op", Lean.Json.str "poll")]
-    | Terminal.sleep ms =>
-        Lean.Json.mkObj
-          [ ("op", Lean.Json.str "sleep")
-          , ("ms", Lean.toJson ms)
-          ]
-  encodeResponse
-    | Terminal.draw _, () => Lean.Json.null
-    | Terminal.poll, command => Lean.Json.str (toString command)
-    | Terminal.sleep _, () => Lean.Json.null
-  decodeResponse?
-    | Terminal.draw _, value => decodeUnitJson? value
-    | Terminal.poll, value => value.getStr?.toOption.bind Command.parse?
-    | Terminal.sleep _, value => decodeUnitJson? value
+instance : Lean.FromJson Command where
+  fromJson? json := do
+    let value ← json.getStr?
+    match Command.parse? value with
+    | some command => pure command
+    | none => Except.error s!"unknown command: {value}"
 
 abbrev GameEff (α : Type) :=
-  Eff [Reader Config, State Game, Writer String, ExceptE Exit, Random, Terminal] α
-
-def drawFrame {r : List Effect} [Member Terminal r] (frame : String) : Eff r Unit :=
-  send (Terminal.draw frame)
-
-def pollInput {r : List Effect} [Member Terminal r] : Eff r Command :=
-  send Terminal.poll
-
-def sleepFrame {r : List Effect} [Member Terminal r] (ms : Nat) : Eff r Unit :=
-  send (Terminal.sleep ms)
+  Eff [Reader Config, State Game, Writer String, ExceptE Exit, Random,
+    Display String, Input Command, Sleep] α
 
 def p (x y : Int) : Point :=
   { x, y }
@@ -433,7 +402,7 @@ def frame : GameEff Unit := do
   if shouldDrop cfg nextTurn then
     stepDown
   modify (σ := Game) fun game => { game with turns := nextTurn }
-  sleepFrame cfg.tickMs
+  sleepMs cfg.tickMs
 
 def gameLoop : Nat → GameEff Unit
   | 0 => LeanEff.throw Exit.turnLimit
@@ -446,7 +415,9 @@ def exitMessage : Exit → String
   | .gameOver => "game over"
   | .turnLimit => "turn limit reached"
 
-def buildGame (cfg : Config) : Eff [Random, Terminal] ((Except Exit Unit × Game) × List String) := do
+def buildGame (cfg : Config) :
+    Eff [Random, Display String, Input Command, Sleep]
+      ((Except Exit Unit × Game) × List String) := do
   let first ← randomPiece cfg
   let next ← randomPiece cfg
   gameLoop cfg.maxTurns
@@ -455,29 +426,40 @@ def buildGame (cfg : Config) : Eff [Random, Terminal] ((Except Exit Unit × Game
     |> runState (initialGame first next)
     |> runWriter
 
-def runGameLogic (cfg : Config) (seed : Nat) : Eff [Terminal] ((Except Exit Unit × Game) × List String) :=
+def runGameLogic (cfg : Config) (seed : Nat) :
+    Eff [Display String, Input Command, Sleep]
+      ((Except Exit Unit × Game) × List String) :=
   evalRandom seed (buildGame cfg)
 
 abbrev GameResult :=
   (Except Exit Unit × Game) × List String
 
-partial def runTerminalIO {α : Type} : Eff [Terminal] α → IO α
+partial def runTerminalIO {α : Type} :
+    Eff [Display String, Input Command, Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
       | OpenUnion.here request =>
           match request with
-          | Terminal.draw frame => do
+          | Display.draw frame => do
               IO.println frame
               runTerminalIO (Arrs.apply q ())
-          | Terminal.poll => do
-              let stdin ← IO.getStdin
-              let bytes ← stdin.read 8
-              runTerminalIO (Arrs.apply q (parseCommand bytes))
-          | Terminal.sleep ms => do
-              IO.sleep (UInt32.ofNat ms)
-              runTerminalIO (Arrs.apply q ())
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | OpenUnion.there inputUnion =>
+          match inputUnion with
+          | OpenUnion.here request =>
+              match request with
+              | Input.poll => do
+                  let stdin ← IO.getStdin
+                  let bytes ← stdin.read 8
+                  runTerminalIO (Arrs.apply q (parseCommand bytes))
+          | OpenUnion.there sleepUnion =>
+              match sleepUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Sleep.sleepMs ms => do
+                      IO.sleep (UInt32.ofNat ms)
+                      runTerminalIO (Arrs.apply q ())
+              | OpenUnion.there rest => OpenUnion.absurd rest
 
 def runGame (cfg : Config) : IO ((Except Exit Unit × Game) × List String) := do
   let seed ← IO.rand 0 1000000000
@@ -505,8 +487,8 @@ def snapshotOp? (event : SnapshotEvent) : Option String :=
     opJson.getStr?.toOption
 
 def isReplayDisplayEvent (event : SnapshotEvent) : Bool :=
-  event.effect == "Terminal" &&
-    (snapshotOp? event == some "draw" || snapshotOp? event == some "sleep")
+  (event.effect == "Display" && snapshotOp? event == some "draw") ||
+    (event.effect == "Sleep" && snapshotOp? event == some "sleep")
 
 partial def ReplayState.dropDisplayEvents (state : ReplayState) : ReplayState :=
   match state.remaining with
@@ -546,7 +528,7 @@ def consumeSnapshotResponse {t : Effect} [SnapshotCodec t] {α : Type}
         Except.error (SnapshotReplayError.eventMismatch state.index event actual)
 
 partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
-    (state : ReplayState) : Eff [Random, Terminal] α →
+    (state : ReplayState) : Eff [Random, Display String, Input Command, Sleep] α →
     IO (Except SnapshotReplayError (α × ReplayState))
   | Eff.pure x =>
       let state := state.dropDisplayEvents
@@ -564,18 +546,26 @@ partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
           match terminalUnion with
           | OpenUnion.here request =>
               match request with
-              | Terminal.draw frame => do
+              | Display.draw frame => do
                   IO.println frame
                   replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
-              | Terminal.poll =>
-                  match consumeSnapshotResponse Terminal.poll state with
-                  | Except.ok (response, state) =>
-                      replayGameAnimatedLoop state (Arrs.apply q response)
-                  | Except.error error => pure (Except.error error)
-              | Terminal.sleep ms => do
-                  IO.sleep (UInt32.ofNat ms)
-                  replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
-          | OpenUnion.there rest => OpenUnion.absurd rest
+          | OpenUnion.there inputUnion =>
+              match inputUnion with
+              | OpenUnion.here request =>
+                  match request with
+                  | Input.poll =>
+                    match consumeSnapshotResponse (Input.poll (ι := Command)) state with
+                    | Except.ok (response, state) =>
+                        replayGameAnimatedLoop state (Arrs.apply q response)
+                    | Except.error error => pure (Except.error error)
+              | OpenUnion.there sleepUnion =>
+                  match sleepUnion with
+                  | OpenUnion.here request =>
+                      match request with
+                      | Sleep.sleepMs ms => do
+                          IO.sleep (UInt32.ofNat ms)
+                          replayGameAnimatedLoop state.consumeDisplayEvent (Arrs.apply q ())
+                  | OpenUnion.there rest => OpenUnion.absurd rest
 
 def replayGameAnimated (cfg : Config) (snapshot : Snapshot) :
     IO (Except SnapshotReplayError GameResult) := do
