@@ -74,42 +74,42 @@ def matchesRequest {t : Effect} [SnapshotCodec t] {α : Type}
 end SnapshotCodec
 
 class SnapshotRow (r : List Effect) where
-  requestOf : {α : Type} → OpenUnion r α → SnapshotRequest
-  eventOf : {α : Type} → OpenUnion r α → α → SnapshotEvent
-  matchesRequest : {α : Type} → OpenUnion r α → SnapshotEvent → Bool
-  decodeResponse? : {α : Type} → OpenUnion r α → SnapshotEvent → Option α
-  checkMode : {α : Type} → OpenUnion r α → SnapshotCheckMode
+  requestOf : {α : Type} → EffectRequest r α → SnapshotRequest
+  eventOf : {α : Type} → EffectRequest r α → α → SnapshotEvent
+  matchesRequest : {α : Type} → EffectRequest r α → SnapshotEvent → Bool
+  decodeResponse? : {α : Type} → EffectRequest r α → SnapshotEvent → Option α
+  checkMode : {α : Type} → EffectRequest r α → SnapshotCheckMode
 
 namespace SnapshotRow
 
 instance : SnapshotRow [] where
-  requestOf u := OpenUnion.absurd u
-  eventOf u _ := OpenUnion.absurd u
-  matchesRequest u _ := OpenUnion.absurd u
-  decodeResponse? u _ := OpenUnion.absurd u
-  checkMode u := OpenUnion.absurd u
+  requestOf u := EffectRequest.absurd u
+  eventOf u _ := EffectRequest.absurd u
+  matchesRequest u _ := EffectRequest.absurd u
+  decodeResponse? u _ := EffectRequest.absurd u
+  checkMode u := EffectRequest.absurd u
 
 instance {t : Effect} {r : List Effect} [SnapshotCodec t] [SnapshotRow r] :
     SnapshotRow (t :: r) where
   requestOf
-    | OpenUnion.here request => SnapshotCodec.requestOf request
-    | OpenUnion.there rest => SnapshotRow.requestOf rest
+    | EffectRequest.here request => SnapshotCodec.requestOf request
+    | EffectRequest.there rest => SnapshotRow.requestOf rest
   eventOf
-    | OpenUnion.here request, response => SnapshotCodec.eventOf request response
-    | OpenUnion.there rest, response => SnapshotRow.eventOf rest response
+    | EffectRequest.here request, response => SnapshotCodec.eventOf request response
+    | EffectRequest.there rest, response => SnapshotRow.eventOf rest response
   matchesRequest
-    | OpenUnion.here request, event => SnapshotCodec.matchesRequest request event
-    | OpenUnion.there rest, event => SnapshotRow.matchesRequest rest event
+    | EffectRequest.here request, event => SnapshotCodec.matchesRequest request event
+    | EffectRequest.there rest, event => SnapshotRow.matchesRequest rest event
   decodeResponse?
-    | OpenUnion.here request, event =>
+    | EffectRequest.here request, event =>
         if SnapshotCodec.matchesRequest request event then
           SnapshotCodec.decodeResponse? request event.response
         else
           none
-    | OpenUnion.there rest, event => SnapshotRow.decodeResponse? rest event
+    | EffectRequest.there rest, event => SnapshotRow.decodeResponse? rest event
   checkMode
-    | OpenUnion.here request => SnapshotCodec.checkMode request
-    | OpenUnion.there rest => SnapshotRow.checkMode rest
+    | EffectRequest.here request => SnapshotCodec.checkMode request
+    | EffectRequest.there rest => SnapshotRow.checkMode rest
 
 end SnapshotRow
 
@@ -259,7 +259,7 @@ partial def recordSnapshot {r : List Effect} {α : Type} [SnapshotRow r]
     [Inhabited α] : Eff r α → Eff (Writer SnapshotEvent :: r) α
   | Eff.pure x => pure x
   | Eff.impure u q => do
-      let response ← Eff.impure (OpenUnion.there u) (Arrs.one Eff.pure)
+      let response ← Eff.impure (EffectRequest.there u) (Arrs.one Eff.pure)
       tell (SnapshotRow.eventOf u response)
       recordSnapshot (Arrs.apply q response)
 

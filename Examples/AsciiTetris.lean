@@ -480,27 +480,27 @@ partial def runTerminalIO {α : Type} (info : RenderInfo) :
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Display.draw frame => do
               IO.println (renderFrame info frame)
               runTerminalIO info (Arrs.apply q ())
-      | OpenUnion.there inputUnion =>
+      | EffectRequest.there inputUnion =>
           match inputUnion with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | Input.poll => do
                   let stdin ← IO.getStdin
                   let bytes ← stdin.read 8
                   runTerminalIO info (Arrs.apply q (parseCommand bytes))
-          | OpenUnion.there sleepUnion =>
+          | EffectRequest.there sleepUnion =>
               match sleepUnion with
-              | OpenUnion.here request =>
+              | EffectRequest.here request =>
                   match request with
                   | Sleep.sleepMs ms => do
                       IO.sleep (UInt32.ofNat ms)
                       runTerminalIO info (Arrs.apply q ())
-              | OpenUnion.there rest => OpenUnion.absurd rest
+              | EffectRequest.there rest => EffectRequest.absurd rest
 
 def runGame (cfg : Config) : IO ((Except Exit Unit × Game) × List String) := do
   let seed ← IO.rand 0 1000000000
@@ -583,14 +583,14 @@ partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
       | _ => pure (Except.error (SnapshotReplayError.unusedEvents state.index state.remaining))
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match consumeSnapshotResponse request state with
           | Except.ok (response, state) =>
               replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
           | Except.error error => pure (Except.error error)
-      | OpenUnion.there terminalUnion =>
+      | EffectRequest.there terminalUnion =>
           match terminalUnion with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | Display.draw frame => do
                   let (event?, state) := state.consumeOptionalEvent "Display" "draw"
@@ -603,24 +603,24 @@ partial def replayGameAnimatedLoop {α : Type} [Inhabited α]
                       json? := some jsonName }
                   IO.println (renderFrame info frame)
                   replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
-          | OpenUnion.there inputUnion =>
+          | EffectRequest.there inputUnion =>
               match inputUnion with
-              | OpenUnion.here request =>
+              | EffectRequest.here request =>
                   match request with
                   | Input.poll =>
                     match consumeSnapshotResponse (Input.poll (ι := Command)) state with
                     | Except.ok (response, state) =>
                         replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
                     | Except.error error => pure (Except.error error)
-              | OpenUnion.there sleepUnion =>
+              | EffectRequest.there sleepUnion =>
                   match sleepUnion with
-                  | OpenUnion.here request =>
+                  | EffectRequest.here request =>
                       match request with
                       | Sleep.sleepMs ms => do
                           let (_, state) := state.consumeOptionalEvent "Sleep" "sleep"
                           IO.sleep (UInt32.ofNat ms)
                           replayGameAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
-                  | OpenUnion.there rest => OpenUnion.absurd rest
+                  | EffectRequest.there rest => EffectRequest.absurd rest
 
 def replayGameAnimated (jsonName : String) (cfg : Config) (snapshot : Snapshot) :
     IO (Except SnapshotReplayError GameResult) := do

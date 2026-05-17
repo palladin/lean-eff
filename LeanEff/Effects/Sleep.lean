@@ -12,11 +12,11 @@ partial def runSleepIO {α : Type} : Eff [Sleep] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Sleep.sleepMs ms => do
               IO.sleep (UInt32.ofNat ms)
               runSleepIO (Arrs.apply q ())
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 end LeanEff

@@ -14,11 +14,11 @@ partial def runDisplayIO {frame α : Type}
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Display.draw frame => do
               IO.print (render frame)
               runDisplayIO render (Arrs.apply q ())
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 end LeanEff

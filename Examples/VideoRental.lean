@@ -400,14 +400,14 @@ partial def runShopIO {α : Type}
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Clock.now => do
               let day ← currentUnixDay
               runShopIO conn (Arrs.apply q day)
-      | OpenUnion.there repoUnion =>
+      | EffectRequest.there repoUnion =>
           match repoUnion with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | RentalRepo.findCustomer id => do
                   let customer ← findCustomerSqlite conn id
@@ -430,9 +430,9 @@ partial def runShopIO {α : Type}
               | RentalRepo.listMovies => do
                   let movies ← listMoviesSqlite conn
                   runShopIO conn (Arrs.apply q movies)
-          | OpenUnion.there consoleUnion =>
+          | EffectRequest.there consoleUnion =>
               match consoleUnion with
-              | OpenUnion.here request =>
+              | EffectRequest.here request =>
                   match request with
                   | Console.printLine line => do
                       IO.println line
@@ -441,7 +441,7 @@ partial def runShopIO {α : Type}
                       let stdin ← IO.getStdin
                       let line ← stdin.getLine
                       runShopIO conn (Arrs.apply q (line.trimAscii.toString))
-              | OpenUnion.there rest => OpenUnion.absurd rest
+              | EffectRequest.there rest => EffectRequest.absurd rest
 
 def runDemo (day : Day) : IO (Except ShopError Unit × List String) := do
   let conn ← openInMemorySqlite

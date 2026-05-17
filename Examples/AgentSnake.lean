@@ -567,7 +567,7 @@ private partial def runAgentRuntime {α : Type} (host : AgentHostIO) (wire : Age
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | AgentRuntime.observe => do
               let view ← Std.Channel.Sync.recv wire.views
@@ -575,7 +575,7 @@ private partial def runAgentRuntime {α : Type} (host : AgentHostIO) (wire : Age
           | AgentRuntime.move dir => do
               Std.Channel.Sync.send host.moveQueue { agentId := wire.profile.id, dir }
               runAgentRuntime host wire (Arrs.apply q ())
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 private def runAgent (turns : Nat) (host : AgentHostIO) (wire : AgentWire) :
     IO (List String) := do
@@ -596,7 +596,7 @@ private partial def runArenaThreadedIO {α : Type} (info : RenderInfo)
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | AgentHost.spawn profile turns => do
               spawnAgentIO host profile turns
@@ -609,21 +609,21 @@ private partial def runArenaThreadedIO {α : Type} (info : RenderInfo)
           | AgentHost.moves => do
               let moves ← drainMoves host.moveQueue []
               runArenaThreadedIO info host (Arrs.apply q moves)
-      | OpenUnion.there rest =>
+      | EffectRequest.there rest =>
           match rest with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | Display.draw world => do
                   IO.print (renderWorld info world)
                   runArenaThreadedIO info host (Arrs.apply q ())
-          | OpenUnion.there sleepUnion =>
+          | EffectRequest.there sleepUnion =>
               match sleepUnion with
-              | OpenUnion.here request =>
+              | EffectRequest.here request =>
                   match request with
                   | Sleep.sleepMs ms => do
                       IO.sleep (UInt32.ofNat ms)
                       runArenaThreadedIO info host (Arrs.apply q ())
-              | OpenUnion.there rest => OpenUnion.absurd rest
+              | EffectRequest.there rest => EffectRequest.absurd rest
 
 private def waitAgentLogs (host : AgentHostIO) : IO (List (List String)) := do
   let tasks ← host.tasks.get
@@ -663,19 +663,19 @@ private partial def runArenaDisplayIO {α : Type} (info : RenderInfo) :
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Display.draw world => do
               IO.print (renderWorld info world)
               runArenaDisplayIO info (Arrs.apply q ())
-      | OpenUnion.there sleepUnion =>
+      | EffectRequest.there sleepUnion =>
           match sleepUnion with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | Sleep.sleepMs ms => do
                   IO.sleep (UInt32.ofNat ms)
                   runArenaDisplayIO info (Arrs.apply q ())
-          | OpenUnion.there rest => OpenUnion.absurd rest
+          | EffectRequest.there rest => EffectRequest.absurd rest
 
 private structure CoopAgent where
   profile : AgentProfile
@@ -709,7 +709,7 @@ private partial def resumeAgentUntilNextView (profile : AgentProfile)
         logs? := some result.2 }
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | AgentRuntime.observe =>
               if usedView then
@@ -721,7 +721,7 @@ private partial def resumeAgentUntilNextView (profile : AgentProfile)
           | AgentRuntime.move dir =>
               resumeAgentUntilNextView profile view usedView (Arrs.apply q ())
                 ({ agentId := profile.id, dir } :: moves)
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 private def stepCoopAgent (world : World) (agent : CoopAgent) :
     CoopAgent × List AgentMove :=
@@ -748,7 +748,7 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
   | Eff.pure x => pure (x, coopAgentLogs host)
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | AgentHost.spawn profile turns =>
               let agent :=
@@ -768,17 +768,17 @@ private partial def runAgentHostCoop {α : Type} [Inhabited α] (host : CoopHost
               runAgentHostCoop
                 { host with pendingMoves := [] }
                 (Arrs.apply q host.pendingMoves)
-      | OpenUnion.there rest =>
+      | EffectRequest.there rest =>
           match rest with
-          | OpenUnion.here request =>
-              Eff.impure (OpenUnion.here request)
+          | EffectRequest.here request =>
+              Eff.impure (EffectRequest.here request)
                 (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
-          | OpenUnion.there sleepUnion =>
+          | EffectRequest.there sleepUnion =>
               match sleepUnion with
-              | OpenUnion.here request =>
-                  Eff.impure (OpenUnion.there (OpenUnion.here request))
+              | EffectRequest.here request =>
+                  Eff.impure (EffectRequest.there (EffectRequest.here request))
                     (Arrs.one fun x => runAgentHostCoop host (Arrs.apply q x))
-              | OpenUnion.there rest => OpenUnion.absurd rest
+              | EffectRequest.there rest => EffectRequest.absurd rest
 
 private def runArenaCoop (info : RenderInfo) (cfg : ArenaConfig) (seed : Nat)
     (world : World) :
@@ -911,7 +911,7 @@ partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
       | _ => pure (Except.error (SnapshotReplayError.unusedEvents state.index state.remaining))
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | AgentHost.spawn _ _ =>
               let (_, state) := state.consumeOptionalEvent "AgentHost" "spawn"
@@ -924,9 +924,9 @@ partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
               | Except.ok (moves, state) =>
                   replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q moves)
               | Except.error error => pure (Except.error error)
-      | OpenUnion.there displayUnion =>
+      | EffectRequest.there displayUnion =>
           match displayUnion with
-          | OpenUnion.here request =>
+          | EffectRequest.here request =>
               match request with
               | Display.draw world => do
                   let (event?, state) := state.consumeOptionalEvent "Display" "draw"
@@ -939,22 +939,22 @@ partial def replayArenaAnimatedLoop {α : Type} [Inhabited α]
                       json? := some jsonName }
                   IO.print (renderWorld info world)
                   replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
-          | OpenUnion.there sleepUnion =>
+          | EffectRequest.there sleepUnion =>
               match sleepUnion with
-              | OpenUnion.here request =>
+              | EffectRequest.here request =>
                   match request with
                   | Sleep.sleepMs ms => do
                       let (_, state) := state.consumeOptionalEvent "Sleep" "sleep"
                       IO.sleep (UInt32.ofNat ms)
                       replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q ())
-              | OpenUnion.there randomUnion =>
+              | EffectRequest.there randomUnion =>
                   match randomUnion with
-                  | OpenUnion.here request =>
+                  | EffectRequest.here request =>
                       match consumeSnapshotResponse request state with
                       | Except.ok (response, state) =>
                           replayArenaAnimatedLoop jsonName totalSnapshots state (Arrs.apply q response)
                       | Except.error error => pure (Except.error error)
-                  | OpenUnion.there rest => OpenUnion.absurd rest
+                  | EffectRequest.there rest => EffectRequest.absurd rest
 
 def replayArenaAnimated (jsonName : String) (cfg : ArenaConfig) (world : World)
     (snapshot : Snapshot) :

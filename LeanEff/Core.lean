@@ -1,11 +1,11 @@
-import LeanEff.Internal.Union
+import LeanEff.Internal.EffectRequest
 
 namespace LeanEff
 
 mutual
   inductive Eff (r : List Effect) : Type → Type _ where
     | pure {α : Type} : α → Eff r α
-    | impure {α x : Type} : OpenUnion r x → Arrs r x α → Eff r α
+    | impure {α x : Type} : EffectRequest r x → Arrs r x α → Eff r α
 
   inductive Arrs (r : List Effect) : Type → Type → Type _ where
     | one {α β : Type} : (α → Eff r β) → Arrs r α β
@@ -110,6 +110,6 @@ partial def handleRelay {t : Effect} {r r' : List Effect} [Remove t r r']
 
 def run {α : Type} : Eff [] α → α
   | Eff.pure x => x
-  | Eff.impure u _ => OpenUnion.absurd u
+  | Eff.impure u _ => EffectRequest.absurd u
 
 end LeanEff

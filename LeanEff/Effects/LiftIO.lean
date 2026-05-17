@@ -13,11 +13,11 @@ partial def runLiftIO {α : Type} : Eff [LiftIO] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | LiftIO.lift action => do
               let x ← action
               runLiftIO (Arrs.apply q x)
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 end LeanEff

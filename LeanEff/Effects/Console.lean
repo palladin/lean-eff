@@ -17,7 +17,7 @@ partial def runConsoleIO {α : Type} : Eff [Console] α → IO α
   | Eff.pure x => pure x
   | Eff.impure u q =>
       match u with
-      | OpenUnion.here request =>
+      | EffectRequest.here request =>
           match request with
           | Console.printLine line => do
               IO.println line
@@ -26,6 +26,6 @@ partial def runConsoleIO {α : Type} : Eff [Console] α → IO α
               let stdin ← IO.getStdin
               let line ← stdin.getLine
               runConsoleIO (Arrs.apply q (line.trimAscii.toString))
-      | OpenUnion.there rest => OpenUnion.absurd rest
+      | EffectRequest.there rest => EffectRequest.absurd rest
 
 end LeanEff
