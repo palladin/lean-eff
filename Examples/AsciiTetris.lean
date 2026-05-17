@@ -514,10 +514,10 @@ def runGameRecording (info : RenderInfo) (cfg : Config) : IO (GameResult × Snap
     |> evalRandom seed
     |> runTerminalIO info
 
-def replayGame (cfg : Config) (snapshot : Snapshot) :
+def checkGameSnapshot (cfg : Config) (snapshot : Snapshot) :
     Except SnapshotReplayError GameResult :=
   buildGame cfg
-    |> replaySnapshot snapshot
+    |> checkSnapshot snapshot
 
 structure ReplayState where
   index : Nat
@@ -742,9 +742,9 @@ def main (args : List String) : IO Unit := do
           throw (IO.userError s!"Replay diverged: {repr error}")
   | RunMode.check path => do
       let snapshot ← readSnapshotJson path
-      match replayGame cfg snapshot with
+      match checkGameSnapshot cfg snapshot with
       | Except.ok result => do
-          IO.println s!"Snapshot check matched {snapshot.length} effect events from {path}."
+          IO.println s!"Snapshot check replayed inputs and matched {snapshot.length} events from {path}."
           printSummary result
       | Except.error error =>
           throw (IO.userError s!"Snapshot check diverged: {repr error}")

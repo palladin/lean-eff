@@ -40,11 +40,18 @@ def toRequest (event : SnapshotEvent) : SnapshotRequest :=
 
 end SnapshotEvent
 
+inductive SnapshotCheckMode where
+  | replayResponse
+  | assertRequest
+deriving Repr, BEq
+
 class SnapshotCodec (t : Effect) where
   effectName : String
   encodeRequest : {α : Type} → t α → Lean.Json
   encodeResponse : {α : Type} → t α → α → Lean.Json
   decodeResponse? : {α : Type} → t α → Lean.Json → Option α
+  checkMode : {α : Type} → t α → SnapshotCheckMode :=
+    fun _ => .replayResponse
 
 namespace SnapshotCodec
 
@@ -71,6 +78,7 @@ class SnapshotRow (r : List Effect) where
   eventOf : {α : Type} → OpenUnion r α → α → SnapshotEvent
   matchesRequest : {α : Type} → OpenUnion r α → SnapshotEvent → Bool
   decodeResponse? : {α : Type} → OpenUnion r α → SnapshotEvent → Option α
+  checkMode : {α : Type} → OpenUnion r α → SnapshotCheckMode
 
 namespace SnapshotRow
 
@@ -79,6 +87,7 @@ instance : SnapshotRow [] where
   eventOf u _ := OpenUnion.absurd u
   matchesRequest u _ := OpenUnion.absurd u
   decodeResponse? u _ := OpenUnion.absurd u
+  checkMode u := OpenUnion.absurd u
 
 instance {t : Effect} {r : List Effect} [SnapshotCodec t] [SnapshotRow r] :
     SnapshotRow (t :: r) where
@@ -98,6 +107,9 @@ instance {t : Effect} {r : List Effect} [SnapshotCodec t] [SnapshotRow r] :
         else
           none
     | OpenUnion.there rest, event => SnapshotRow.decodeResponse? rest event
+  checkMode
+    | OpenUnion.here request => SnapshotCodec.checkMode request
+    | OpenUnion.there rest => SnapshotRow.checkMode rest
 
 end SnapshotRow
 
@@ -136,6 +148,8 @@ instance {ω : Type} [Lean.ToJson ω] : SnapshotCodec (Writer ω) where
     | Writer.tell _, () => jsonUnit
   decodeResponse?
     | Writer.tell _, value => decodeUnit? value
+  checkMode
+    | Writer.tell _ => .assertRequest
 
 instance {σ : Type} [Lean.ToJson σ] [Lean.FromJson σ] :
     SnapshotCodec (State σ) where
@@ -196,6 +210,9 @@ instance : SnapshotCodec Console where
   decodeResponse?
     | Console.printLine _, value => decodeUnit? value
     | Console.readLine, value => value.getStr?.toOption
+  checkMode
+    | Console.printLine _ => .assertRequest
+    | Console.readLine => .replayResponse
 
 instance {frame : Type} [Lean.ToJson frame] :
     SnapshotCodec (Display frame) where
@@ -210,6 +227,8 @@ instance {frame : Type} [Lean.ToJson frame] :
     | Display.draw _, () => jsonUnit
   decodeResponse?
     | Display.draw _, value => decodeUnit? value
+  checkMode
+    | Display.draw _ => .assertRequest
 
 instance {ι : Type} [Lean.ToJson ι] [Lean.FromJson ι] :
     SnapshotCodec (Input ι) where
@@ -233,6 +252,8 @@ instance : SnapshotCodec Sleep where
     | Sleep.sleepMs _, () => jsonUnit
   decodeResponse?
     | Sleep.sleepMs _, value => decodeUnit? value
+  checkMode
+    | Sleep.sleepMs _ => .assertRequest
 
 partial def recordSnapshot {r : List Effect} {α : Type} [SnapshotRow r]
     [Inhabited α] : Eff r α → Eff (Writer SnapshotEvent :: r) α
@@ -247,6 +268,10 @@ inductive SnapshotReplayError where
   | eventMismatch (index : Nat) (recorded : SnapshotEvent)
       (actual : SnapshotRequest)
   | responseDecodeFailed (index : Nat) (recorded : SnapshotEvent)
+      (actual : SnapshotRequest)
+  | assertionMismatch (index : Nat) (recorded : SnapshotEvent)
+      (actual : SnapshotRequest)
+  | assertionResponseDecodeFailed (index : Nat) (recorded : SnapshotEvent)
       (actual : SnapshotRequest)
   | unusedEvents (index : Nat) (remaining : Snapshot)
 deriving Repr, BEq
@@ -278,6 +303,54 @@ private partial def replaySnapshotLoop {r : List Effect} {α : Type}
 def replaySnapshot {r : List Effect} {α : Type} [SnapshotRow r] [Inhabited α]
     (snapshot : Snapshot) (m : Eff r α) : Except SnapshotReplayError α :=
   replaySnapshotLoop 0 snapshot m
+
+private partial def checkSnapshotLoop {r : List Effect} {α : Type}
+    [SnapshotRow r] [Inhabited α]
+    (index : Nat) (snapshot : Snapshot) : Eff r α → Except SnapshotReplayError α
+  | Eff.pure x =>
+      match snapshot with
+      | [] => Except.ok x
+      | _ => Except.error (SnapshotReplayError.unusedEvents index snapshot)
+  | Eff.impure u q =>
+      match snapshot with
+      | [] =>
+          Except.error
+            (SnapshotReplayError.snapshotEnded index (SnapshotRow.requestOf u))
+      | event :: rest =>
+          let request := SnapshotRow.requestOf u
+          match SnapshotRow.checkMode u with
+          | .replayResponse =>
+              if SnapshotRow.matchesRequest u event then
+                match SnapshotRow.decodeResponse? u event with
+                | some response =>
+                    checkSnapshotLoop (index + 1) rest (Arrs.apply q response)
+                | none =>
+                    Except.error
+                      (SnapshotReplayError.responseDecodeFailed index event request)
+              else
+                Except.error (SnapshotReplayError.eventMismatch index event request)
+          | .assertRequest =>
+              if SnapshotRow.matchesRequest u event then
+                match SnapshotRow.decodeResponse? u event with
+                | some response =>
+                    checkSnapshotLoop (index + 1) rest (Arrs.apply q response)
+                | none =>
+                    Except.error
+                      (SnapshotReplayError.assertionResponseDecodeFailed index event request)
+              else
+                Except.error (SnapshotReplayError.assertionMismatch index event request)
+
+/--
+Runs a program against a recorded snapshot as a deterministic check.
+
+Input-like effects such as `Random` and `Input` receive their recorded
+responses. Output-like effects such as `Display.draw`, `Console.printLine`, or
+`Writer.tell` must issue the same request as the snapshot before execution can
+continue.
+-/
+def checkSnapshot {r : List Effect} {α : Type} [SnapshotRow r] [Inhabited α]
+    (snapshot : Snapshot) (m : Eff r α) : Except SnapshotReplayError α :=
+  checkSnapshotLoop 0 snapshot m
 
 inductive SnapshotDivergence where
   | leftEnded (index : Nat) (right : SnapshotEvent)

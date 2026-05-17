@@ -44,9 +44,9 @@ in which handlers are called controls effect interaction.
 
 `recordSnapshot` records request/response effect interactions into a
 `Snapshot`. A snapshot can later replay the same responses with
-`replaySnapshot`, or be compared against another run with `compareSnapshots`.
-Use `Snapshot.toJsonString` and `Snapshot.fromJsonString` to persist traces as
-JSON.
+`replaySnapshot`, run a deterministic check with `checkSnapshot`, or be compared
+against another run with `compareSnapshots`. Use `Snapshot.toJsonString` and
+`Snapshot.fromJsonString` to persist traces as JSON.
 
 ```lean
 def recorded :=
@@ -61,6 +61,10 @@ def replayed :=
   program
     |> replaySnapshot recorded.2
 
+def checked :=
+  program
+    |> checkSnapshot recorded.2
+
 def divergence :=
   compareSnapshots recorded.2 anotherSnapshot
 ```
@@ -69,7 +73,11 @@ Effects opt into snapshots through `SnapshotCodec`, which encodes effect
 requests and responses as structured `Lean.Json` values. LeanEff includes
 codecs for the built-in resumable effects.
 Snapshots are request/response traces, so an effect operation that never resumes
-does not produce an event through this middleware.
+does not produce an event through this middleware. During a check, recorded
+responses drive input-like effects such as `Random` and `Input`, while
+output-like effect requests such as `Display.draw` frames must match the
+recorded snapshot. `SnapshotCodec.checkMode` controls whether a request replays
+its recorded response or asserts the generated request.
 
 ## Examples
 

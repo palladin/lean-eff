@@ -166,6 +166,9 @@ def customSnapshotTrue : Snapshot :=
 def customSnapshotFalse : Snapshot :=
   [promptFalseEvent, writerNoEvent]
 
+def customSnapshotOutputMismatch : Snapshot :=
+  [promptTrueEvent, writerNoEvent]
+
 #guard
   (customProgram
     |> recordSnapshot
@@ -177,6 +180,18 @@ def customSnapshotFalse : Snapshot :=
 #guard
   match customProgram |> replaySnapshot customSnapshotTrue with
   | Except.ok 1 => true
+  | _ => false
+
+#guard
+  match customProgram |> checkSnapshot customSnapshotTrue with
+  | Except.ok 1 => true
+  | _ => false
+
+#guard
+  match customProgram |> checkSnapshot customSnapshotOutputMismatch with
+  | Except.error (SnapshotReplayError.assertionMismatch 1 recorded actual) =>
+      recorded == writerNoEvent &&
+        actual == SnapshotEvent.toRequest writerYesEvent
   | _ => false
 
 #guard

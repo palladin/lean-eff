@@ -159,6 +159,10 @@ instance : SnapshotCodec AgentHost where
     | AgentHost.snapshot _, value => decodeUnitJson? value
     | AgentHost.moves, value =>
         (Lean.fromJson? value : Except String (List AgentMove)).toOption
+  checkMode
+    | AgentHost.spawn _ _ => .assertRequest
+    | AgentHost.snapshot _ => .assertRequest
+    | AgentHost.moves => .replayResponse
 
 def spawnAgent {r : List Effect} [Member AgentHost r]
     (profile : AgentProfile) (turns : Nat) : Eff r Unit :=
@@ -968,7 +972,7 @@ def replayArenaAnimated (jsonName : String) (cfg : ArenaConfig) (world : World)
 def checkArenaSnapshot (cfg : ArenaConfig) (world : World)
     (snapshot : Snapshot) : Except SnapshotReplayError ArenaResult :=
   buildArena cfg world
-    |> replaySnapshot snapshot
+    |> checkSnapshot snapshot
 
 def spawnProfile? (event : SnapshotEvent) : Option AgentProfile := do
   if event.effect == "AgentHost" && snapshotOp? event == some "spawn" then
@@ -1152,7 +1156,7 @@ def main (args : List String) : IO Unit := do
       let cfg := defaultConfig profiles
       match checkArenaSnapshot cfg (initialWorld profiles) snapshot with
       | .ok ((_, finalWorld), arenaLog) => do
-          IO.println s!"Snapshot check matched {snapshot.length} effect events from {path}."
+          IO.println s!"Snapshot check replayed inputs and matched {snapshot.length} events from {path}."
           printSummary "snapshot check" arenaLog [] finalWorld
       | .error error =>
           throw (IO.userError s!"Snapshot check diverged: {repr error}")
