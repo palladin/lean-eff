@@ -4,6 +4,8 @@ LeanEff is a small Lean 4 extensible-effects library inspired by
 “Freer Monads, More Extensible Effects,” and shaped for practical Lean
 programming.
 
+The project uses Lean **4.34.1**, pinned in `lean-toolchain`.
+
 The intended user-facing style is concrete effect rows:
 
 ```lean
