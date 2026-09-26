@@ -26,6 +26,49 @@ Effect rows are treated as set-like lists for handler lookup. A handler removes
 its effect wherever it appears and preserves the remaining row order; the order
 in which handlers are called controls effect interaction.
 
+## Direct Effect Families
+
+The shared computation core is `EffF e α`, where `e : Type → Type u` is a
+request family. `ArrsF e α β` is its typed continuation queue. The ordinary row
+API specializes the same implementation:
+
+```lean
+abbrev Eff (r : List Effect) := EffF (EffectRequest r)
+abbrev Arrs (r : List Effect) := ArrsF (EffectRequest r)
+```
+
+Use `EffF.send` to send a direct request; `send` continues to inject a request
+into a row through `Member`. Both forms use the same bind and queue operations.
+
+A direct family can contain nested computations. For example, a scoped reader
+operation passes a body to its handler:
+
+```lean
+inductive Scope : Effect where
+  | ask : Scope Nat
+  | local {α : Type} (modify : Nat → Nat) : EffF Scope α → Scope α
+
+abbrev Program := EffF Scope
+```
+
+The complete [scoped-reader example](Examples/ScopedReader.lean) interprets the
+body in a modified environment and resumes its caller in the original one.
+Recursive constructor fields name the actual inductive `EffF` directly; the
+convenience alias is declared afterwards. The family can vary its request
+universe; computation results remain in `Type`. The direct core avoids the
+extra universe level of the row-indexed `EffectRequest` when defining such
+nested algebras.
+
+Existing row handlers and snapshot functions continue to operate on `Eff r`.
+They do not automatically traverse nested computations in arbitrary higher-order
+effects; the corresponding handler defines those semantics.
+
+Row signatures, qualified constructor patterns, queue views, and queue helper
+names are retained through aliases. Compiler-generated declaration names now
+belong to `EffF` and `ArrsF`; clients using generated recursors or inspecting
+names must migrate. This is source compatibility for the ordinary row API,
+not full compatibility with every generated declaration from the old datatypes.
+
 ## Included Effects
 
 - `Reader ρ`: `ask`, `runReader`
@@ -166,7 +209,7 @@ lake exe agent_snake_arena --check trace.json
 
 - Duplicate effect labels are unsupported. Wrap labels in distinct types if two
   effects have the same payload type.
-- The core uses a Lean-friendly mutual `Eff` / `Arrs` continuation queue with
+- The core uses a Lean-friendly mutual `EffF` / `ArrsF` continuation queue with
   a `ViewL` operation, so continuations are consumed from the front instead of
   repeatedly walking a left spine.
 - Recursive handlers are executable `partial def`s; v1 handlers therefore

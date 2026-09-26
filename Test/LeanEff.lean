@@ -1,4 +1,5 @@
 import LeanEff
+import Examples.ScopedReader
 
 open LeanEff
 
@@ -294,3 +295,72 @@ def main : IO Unit := do
     pure ()
   else
     throw (IO.userError s!"unexpected LiftIO result: {result}")
+
+namespace Test.EffF
+
+-- A direct family need not use EffectRequest or live in Type 1.
+inductive Tick : Type → Type where
+  | tick : Tick Unit
+
+private partial def countTicks [Inhabited α]
+    (program : EffF Tick α) (count : Nat := 0) : α × Nat :=
+  match program with
+  | .pure value => (value, count)
+  | .impure .tick continuation =>
+      countTicks (ArrsF.apply continuation ()) (count + 1)
+
+private def ticks : Nat → EffF Tick Nat
+  | 0 => pure 0
+  | n + 1 => do
+      let previous ← ticks n
+      EffF.send Tick.tick
+      pure (previous + 1)
+
+#guard countTicks (pure "done") == ("done", 0)
+#guard countTicks (ticks 1000) == (1000, 1000)
+
+private def mixedResults : EffF Tick (Nat × String) := do
+  let n ← ticks 3
+  EffF.send Tick.tick
+  pure (n + 1, s!"ticks={n}")
+
+#guard countTicks mixedResults == ((4, "ticks=3"), 4)
+
+-- The higher-order handler restores the caller's environment after every nested body.
+open Examples.ScopedReader in
+#guard run 10 scopedProgram == (10, 60, 10)
+
+open Examples.ScopedReader in
+#guard run 3 scopedProgram == (3, 18, 3)
+
+private def stringScope : Examples.ScopedReader.Program String := do
+  let number ← Examples.ScopedReader.locally (fun _ => 7) Examples.ScopedReader.ask
+  let text ← Examples.ScopedReader.locally (· + number) do
+    pure s!"inside={← Examples.ScopedReader.ask}"
+  pure s!"{text},outside={← Examples.ScopedReader.ask}"
+
+#guard Examples.ScopedReader.run 5 stringScope == "inside=12,outside=5"
+
+-- Existing qualified row constructors, queue views, and helpers remain usable.
+private def resumeRow (queue : Arrs [] Nat Nat) (value : Nat) : Nat :=
+  match Arrs.viewL queue with
+  | Arrs.ViewL.one k => LeanEff.run (k value)
+  | Arrs.ViewL.cons k rest => LeanEff.run (Eff.bindArrs (k value) rest)
+
+#guard resumeRow
+  (Arrs.append (Arrs.one fun n => Eff.pure (n + 1))
+    (Arrs.one fun n => Eff.pure (n * 2))) 20 == 42
+
+-- These are the bounds used when clients recurse over the rest of a row queue.
+example {r : List Effect} (q : Arrs r α β) (k : α → Eff r γ)
+    (rest : Arrs r γ β) (h : Arrs.viewL q = .cons k rest) :
+    sizeOf rest < sizeOf q := by
+  simpa only [h] using Arrs.viewL_rest_lt q
+
+example {r : List Effect} (q : Arrs r α β) (rest : Arrs r β γ)
+    (k : α → Eff r δ) (remaining : Arrs r δ γ)
+    (h : Arrs.viewLAppend q rest = .cons k remaining) :
+    sizeOf remaining < sizeOf (Arrs.append q rest) := by
+  simpa only [h] using Arrs.viewLAppend_rest_lt q rest
+
+end Test.EffF

@@ -11,6 +11,9 @@ package lean_eff where
 lean_lib LeanEff where
   srcDir := "."
 
+lean_lib ScopedReaderExample where
+  roots := #[`Examples.ScopedReader]
+
 @[default_target]
 lean_exe lean_eff_tests where
   root := `Test.LeanEff
