@@ -2,21 +2,23 @@ import LeanEff.Core
 
 namespace LeanEff
 
+variable {μ : Type}
+
 inductive Random : Effect where
   | nat : Nat → Nat → Random Nat
   | bool : Random Bool
 
-def randNat {r : List Effect} [Member Random r] (lo hi : Nat) : Eff r Nat :=
+def randNat {r : List Effect} [Member Random r] (lo hi : Nat) : EffM r μ Nat :=
   send (Random.nat lo hi)
 
-def randBool {r : List Effect} [Member Random r] : Eff r Bool :=
+def randBool {r : List Effect} [Member Random r] : EffM r μ Bool :=
   send Random.bool
 
 private partial def runRandomLoop {α : Type} {r r' : List Effect}
     [Remove Random r r'] [Inhabited α]
-    (gen : StdGen) : Eff r α → Eff r' (α × StdGen)
-  | Eff.pure x => pure (x, gen)
-  | Eff.impure u q =>
+    (gen : StdGen) : EffM r μ α → EffM r' μ (α × StdGen)
+  | EffF.pure info x => EffF.pure info (x, gen)
+  | EffF.impure info u q =>
       match Remove.decomp (t := Random) (r := r) (r' := r') u with
       | Sum.inl request =>
           match request with
@@ -27,16 +29,16 @@ private partial def runRandomLoop {α : Type} {r r' : List Effect}
               let (value, nextGen) := _root_.randBool gen
               runRandomLoop nextGen (Arrs.apply q value)
       | Sum.inr rest =>
-          Eff.impure rest (Arrs.one (qComp q (runRandomLoop gen)))
+          EffF.impure info rest (Arrs.one (qComp q (runRandomLoop gen)))
 
 def runRandom {α : Type} {r r' : List Effect} [Remove Random r r']
     [Inhabited α]
-    (seed : Nat) (m : Eff r α) : Eff r' (α × StdGen) :=
+    (seed : Nat) (m : EffM r μ α) : EffM r' μ (α × StdGen) :=
   runRandomLoop (mkStdGen seed) m
 
 def evalRandom {α : Type} {r r' : List Effect} [Remove Random r r']
     [Inhabited α]
-    (seed : Nat) (m : Eff r α) : Eff r' α := do
+    (seed : Nat) (m : EffM r μ α) : EffM r' μ α := do
   let result ← runRandom seed m
   pure result.1
 

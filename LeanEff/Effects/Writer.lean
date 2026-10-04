@@ -2,16 +2,18 @@ import LeanEff.Core
 
 namespace LeanEff
 
+variable {μ : Type}
+
 inductive Writer (ω : Type) : Effect where
   | tell : ω → Writer ω Unit
 
 def tell {ω : Type} {r : List Effect} [Member (Writer ω) r]
-    (value : ω) : Eff r Unit :=
+    (value : ω) : EffM r μ Unit :=
   send (Writer.tell value)
 
 def runWriter {ω α : Type} {r r' : List Effect} [Remove (Writer ω) r r']
     [Inhabited α]
-    (m : Eff r α) : Eff r' (α × List ω) :=
+    (m : EffM r μ α) : EffM r' μ (α × List ω) :=
   handleRelay (t := Writer ω)
     (ret := fun x => pure (x, []))
     (handle := fun request k =>

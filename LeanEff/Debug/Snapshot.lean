@@ -13,6 +13,8 @@ deriving instance Repr for Lean.Json
 
 namespace LeanEff
 
+variable {μ : Type}
+
 structure SnapshotRequest where
   effect : String
   request : Lean.Json
@@ -256,10 +258,10 @@ instance : SnapshotCodec Sleep where
     | Sleep.sleepMs _ => .assertRequest
 
 partial def recordSnapshot {r : List Effect} {α : Type} [SnapshotRow r]
-    [Inhabited α] : Eff r α → Eff (Writer SnapshotEvent :: r) α
-  | Eff.pure x => pure x
-  | Eff.impure u q => do
-      let response ← Eff.impure (EffectRequest.there u) (Arrs.one Eff.pure)
+    [Inhabited α] : EffM r μ α → EffM (Writer SnapshotEvent :: r) μ α
+  | EffF.pure info x => EffF.pure info x
+  | EffF.impure info u q => do
+      let response ← EffF.impure info (EffectRequest.there u) (Arrs.one Eff.pure)
       tell (SnapshotRow.eventOf u response)
       recordSnapshot (Arrs.apply q response)
 
@@ -278,12 +280,12 @@ deriving Repr, BEq
 
 private partial def replaySnapshotLoop {r : List Effect} {α : Type}
     [SnapshotRow r] [Inhabited α]
-    (index : Nat) (snapshot : Snapshot) : Eff r α → Except SnapshotReplayError α
-  | Eff.pure x =>
+    (index : Nat) (snapshot : Snapshot) : EffM r μ α → Except SnapshotReplayError α
+  | EffF.pure _ x =>
       match snapshot with
       | [] => Except.ok x
       | _ => Except.error (SnapshotReplayError.unusedEvents index snapshot)
-  | Eff.impure u q =>
+  | EffF.impure _ u q =>
       match snapshot with
       | [] =>
           Except.error
@@ -301,17 +303,17 @@ private partial def replaySnapshotLoop {r : List Effect} {α : Type}
             Except.error (SnapshotReplayError.eventMismatch index event request)
 
 def replaySnapshot {r : List Effect} {α : Type} [SnapshotRow r] [Inhabited α]
-    (snapshot : Snapshot) (m : Eff r α) : Except SnapshotReplayError α :=
+    (snapshot : Snapshot) (m : EffM r μ α) : Except SnapshotReplayError α :=
   replaySnapshotLoop 0 snapshot m
 
 private partial def checkSnapshotLoop {r : List Effect} {α : Type}
     [SnapshotRow r] [Inhabited α]
-    (index : Nat) (snapshot : Snapshot) : Eff r α → Except SnapshotReplayError α
-  | Eff.pure x =>
+    (index : Nat) (snapshot : Snapshot) : EffM r μ α → Except SnapshotReplayError α
+  | EffF.pure _ x =>
       match snapshot with
       | [] => Except.ok x
       | _ => Except.error (SnapshotReplayError.unusedEvents index snapshot)
-  | Eff.impure u q =>
+  | EffF.impure _ u q =>
       match snapshot with
       | [] =>
           Except.error
@@ -349,7 +351,7 @@ responses. Output-like effects such as `Display.draw`, `Console.printLine`, or
 continue.
 -/
 def checkSnapshot {r : List Effect} {α : Type} [SnapshotRow r] [Inhabited α]
-    (snapshot : Snapshot) (m : Eff r α) : Except SnapshotReplayError α :=
+    (snapshot : Snapshot) (m : EffM r μ α) : Except SnapshotReplayError α :=
   checkSnapshotLoop 0 snapshot m
 
 inductive SnapshotDivergence where

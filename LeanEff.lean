@@ -1,4 +1,5 @@
 import LeanEff.Core
+import LeanEff.Metadata
 import LeanEff.Effects.Reader
 import LeanEff.Effects.Writer
 import LeanEff.Effects.State

@@ -6,9 +6,9 @@ open LeanEff
 
 inductive Scope : Effect where
   | ask : Scope Nat
-  | local {α : Type} (modify : Nat → Nat) : EffF Scope α → Scope α
+  | local {α : Type} (modify : Nat → Nat) : EffF Scope Empty α → Scope α
 
-abbrev Program := EffF Scope
+abbrev Program := EffF Scope Empty
 
 def ask : Program Nat := EffF.send .ask
 
@@ -19,8 +19,8 @@ def locally (modify : Nat → Nat) (body : Program α) : Program α :=
 private partial def interpret [Inhabited β] (environment : Nat)
     (program : Program α) (ret : α → β) : β :=
   match program with
-  | .pure value => ret value
-  | .impure request continuation =>
+  | .pure _ value => ret value
+  | .impure _ request continuation =>
       match request with
       | .ask => interpret environment (ArrsF.apply continuation environment) ret
       | .local modify body =>

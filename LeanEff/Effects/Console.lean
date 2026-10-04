@@ -2,20 +2,22 @@ import LeanEff.Core
 
 namespace LeanEff
 
+variable {μ : Type}
+
 inductive Console : Effect where
   | printLine : String → Console Unit
   | readLine : Console String
 
 def printLine {r : List Effect} [Member Console r]
-    (line : String) : Eff r Unit :=
+    (line : String) : EffM r μ Unit :=
   send (Console.printLine line)
 
-def readLine {r : List Effect} [Member Console r] : Eff r String :=
+def readLine {r : List Effect} [Member Console r] : EffM r μ String :=
   send Console.readLine
 
-partial def runConsoleIO {α : Type} : Eff [Console] α → IO α
-  | Eff.pure x => pure x
-  | Eff.impure u q =>
+partial def runConsoleIO {α : Type} : EffM [Console] μ α → IO α
+  | EffF.pure _ x => pure x
+  | EffF.impure _ u q =>
       match u with
       | EffectRequest.here request =>
           match request with
