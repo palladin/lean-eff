@@ -2,15 +2,17 @@ import LeanEff.Core
 
 namespace LeanEff
 
+variable {μ : Type}
+
 inductive Sleep : Effect where
   | sleepMs : Nat → Sleep Unit
 
-def sleepMs {r : List Effect} [Member Sleep r] (ms : Nat) : Eff r Unit :=
+def sleepMs {r : List Effect} [Member Sleep r] (ms : Nat) : EffM r μ Unit :=
   send (Sleep.sleepMs ms)
 
-partial def runSleepIO {α : Type} : Eff [Sleep] α → IO α
-  | Eff.pure x => pure x
-  | Eff.impure u q =>
+partial def runSleepIO {α : Type} : EffM [Sleep] μ α → IO α
+  | EffF.pure _ x => pure x
+  | EffF.impure _ u q =>
       match u with
       | EffectRequest.here request =>
           match request with

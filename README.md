@@ -30,13 +30,14 @@ in which handlers are called controls effect interaction.
 
 ## Direct Effect Families
 
-The shared computation core is `EffF e α`, where `e : Type → Type u` is a
-request family. `ArrsF e α β` is its typed continuation queue. The ordinary row
+The shared computation core is `EffF e μ α`, where `e : Type → Type u` is a
+request family and `μ : Type` is an application-defined metadata type.
+`ArrsF e μ α β` is its typed continuation queue. The ordinary row
 API specializes the same implementation:
 
 ```lean
-abbrev Eff (r : List Effect) := EffF (EffectRequest r)
-abbrev Arrs (r : List Effect) := ArrsF (EffectRequest r)
+abbrev Eff (r : List Effect) := EffF (EffectRequest r) Empty
+abbrev Arrs (r : List Effect) := ArrsF (EffectRequest r) Empty
 ```
 
 Use `EffF.send` to send a direct request; `send` continues to inject a request
@@ -48,9 +49,9 @@ operation passes a body to its handler:
 ```lean
 inductive Scope : Effect where
   | ask : Scope Nat
-  | local {α : Type} (modify : Nat → Nat) : EffF Scope α → Scope α
+  | local {α : Type} (modify : Nat → Nat) : EffF Scope Empty α → Scope α
 
-abbrev Program := EffF Scope
+abbrev Program := EffF Scope Empty
 ```
 
 The complete [scoped-reader example](Examples/ScopedReader.lean) interprets the
@@ -70,6 +71,40 @@ names are retained through aliases. Compiler-generated declaration names now
 belong to `EffF` and `ArrsF`; clients using generated recursors or inspecting
 names must migrate. This is source compatibility for the ordinary row API,
 not full compatibility with every generated declaration from the old datatypes.
+
+## Node metadata
+
+Both constructors carry `Option μ`; ordinary `pure` and `send` use `none`:
+
+```lean
+EffF.pure   : Option μ → α → EffF e μ α
+EffF.impure : Option μ → e x → ArrsF e μ x α → EffF e μ α
+```
+
+Use `EffM row Metadata` for annotated effect rows, or `EffF Requests Metadata`
+for a direct family. Existing `Eff row` uses `Empty` and needs no annotations.
+The library's handlers and snapshot functions accept either form.
+
+`EffF.withMetadata info program` fills missing annotations throughout that
+computation's continuation spine. Explicit inner annotations win. It wraps future
+continuations without calling them, and does not annotate a continuation bound
+*after* this call. A terminal `pure` can carry metadata, but bind consumes an
+intermediate pure node and its annotation. Metadata is diagnostic context, not an
+extra effect or an execution event.
+
+The generic core cannot inspect computations inside an opaque effect request.
+Higher-order libraries propagate metadata into their own child computations.
+Handlers retain annotations on forwarded requests; consumed requests follow the
+handler's normal semantics. Terminal interpreters may ignore metadata.
+
+`mapMetadata`, `metadata`, and `eraseMetadata` provide inspection and transformation.
+[Metadata laws](LeanEff/Metadata.lean) prove identity, composition, compatibility
+with bind, and that erasing added metadata recovers the original unannotated spine.
+
+Migration for direct-core users: supply the metadata parameter (`Empty` to opt out),
+and add an annotation argument when matching or constructing `EffF.pure` and
+`EffF.impure`. Row helpers such as `Eff.pure`, `Eff.impure`, and `Eff r` retain their
+existing unannotated interface.
 
 ## Included Effects
 

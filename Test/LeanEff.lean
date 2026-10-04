@@ -303,13 +303,13 @@ inductive Tick : Type → Type where
   | tick : Tick Unit
 
 private partial def countTicks [Inhabited α]
-    (program : EffF Tick α) (count : Nat := 0) : α × Nat :=
+    (program : EffF Tick Empty α) (count : Nat := 0) : α × Nat :=
   match program with
-  | .pure value => (value, count)
-  | .impure .tick continuation =>
+  | .pure _ value => (value, count)
+  | .impure _ .tick continuation =>
       countTicks (ArrsF.apply continuation ()) (count + 1)
 
-private def ticks : Nat → EffF Tick Nat
+private def ticks : Nat → EffF Tick Empty Nat
   | 0 => pure 0
   | n + 1 => do
       let previous ← ticks n
@@ -319,7 +319,7 @@ private def ticks : Nat → EffF Tick Nat
 #guard countTicks (pure "done") == ("done", 0)
 #guard countTicks (ticks 1000) == (1000, 1000)
 
-private def mixedResults : EffF Tick (Nat × String) := do
+private def mixedResults : EffF Tick Empty (Nat × String) := do
   let n ← ticks 3
   EffF.send Tick.tick
   pure (n + 1, s!"ticks={n}")
@@ -364,3 +364,49 @@ example {r : List Effect} (q : Arrs r α β) (rest : Arrs r β γ)
   simpa only [h] using Arrs.viewLAppend_rest_lt q rest
 
 end Test.EffF
+
+namespace Test.Metadata
+
+private inductive Tick : Effect where
+  | tick : Tick Unit
+
+private def sites (fuel : Nat) (program : EffF Tick String α) : List (Option String) :=
+  match fuel, program with
+  | 0, _ => []
+  | _, .pure info _ => [info]
+  | n + 1, .impure info .tick next => info :: sites n (next.apply ())
+
+private def helper : EffF Tick String Unit := do
+  EffF.send Tick.tick
+  EffF.send Tick.tick
+
+-- An annotation traverses a helper, but not a continuation appended afterwards.
+#guard sites 10 (do
+    EffF.withMetadata "helper" helper
+    EffF.send Tick.tick) == [some "helper", some "helper", none, none]
+
+#guard sites 10 (EffF.withMetadata "outer" (do
+    EffF.withMetadata "inner" helper
+    EffF.send Tick.tick)) == [some "inner", some "inner", some "outer", some "outer"]
+
+-- A pure node retains its annotation until bind consumes that node.
+#guard EffF.metadata (EffF.withMetadata "return" (pure 7 : EffF Tick String Nat)) == some "return"
+#guard EffF.metadata ((EffF.withMetadata "return" (pure 7 : EffF Tick String Nat)) >>= fun n => pure (n + 1)) == none
+
+private def annotated : EffM [Reader Nat, State Nat] String Nat :=
+  EffF.withMetadata "call" do
+    let value ← ask
+    put (value + 1)
+    get
+
+-- Forwarding and terminal handlers keep metadata and compute the usual result.
+#guard (runReader 41 annotated).metadata == some "call"
+#guard (runState 0 (runReader 41 annotated)).metadata == some "call"
+#guard run (runState 0 (runReader 41 annotated)) == (42, 42)
+
+-- `withMetadata` only wraps the continuation; constructing a node cannot run it.
+private def delayed : EffF Tick String Nat :=
+  .impure none .tick (.one fun _ => panic! "continuation was evaluated during annotation")
+#guard (EffF.withMetadata "site" delayed).metadata == some "site"
+
+end Test.Metadata
